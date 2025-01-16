@@ -64,8 +64,14 @@ export const BridgeForm: React.FC<BridgeFormProps> = ({ account, provider, type 
       return false;
     }
 
-    if (!validateAmount(amount)) {
-      setError('Invalid amount');
+    if (!amount) {
+      setError('Please enter an amount');
+      return false;
+    }
+
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount < 1) {
+      setError('Minimum deposit is 1 DOGE');
       return false;
     }
 

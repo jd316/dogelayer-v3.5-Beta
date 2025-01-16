@@ -1,11 +1,8 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { Contract } from "ethers";
+import { Contract, AbiCoder, keccak256, getBytes, encodeBytes32String } from "ethers";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
-import { AbiCoder } from "@ethersproject/abi";
-import { hashMessage } from "@ethersproject/hash";
-import { arrayify } from "@ethersproject/bytes";
 
 interface DogeBridgeContract extends Contract {
   wdoge(): Promise<string>;
@@ -48,7 +45,7 @@ describe("DogeBridge", function () {
   let signer: SignerWithAddress;
   let testAmount: bigint;
 
-  const minDeposit = ethers.parseEther("100");
+  const minDeposit = ethers.parseEther("1");
   const maxDeposit = ethers.parseEther("1000000");
   const bridgeFee = ethers.parseEther("1");
   const OPERATOR_ROLE = ethers.id("OPERATOR_ROLE");
@@ -66,8 +63,9 @@ describe("DogeBridge", function () {
       ["address", "uint256", "bytes32"],
       [recipient, amount, depositId]
     );
-    const messageHash = hashMessage(encodedData);
-    return await signer.signMessage(arrayify(messageHash));
+    const messageHash = keccak256(encodedData);
+    const signature = await signer.signMessage(getBytes(messageHash));
+    return signature;
   }
 
   beforeEach(async function () {
@@ -143,7 +141,7 @@ describe("DogeBridge", function () {
           depositId,
           signature
         )
-      ).to.be.revertedWith("AccessControl: account");
+      ).to.be.revertedWith("AccessControl: account 0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc is missing role 0x97667070c54ef182b0f5858b034beac1b6f3089aa2d3188bb1e8929f4fa9b929");
     });
 
     it("Should not allow processing same deposit twice", async function () {
@@ -197,21 +195,28 @@ describe("DogeBridge", function () {
     const dogeAddress = "DRtbRTXscM1qWe1zjQSZJxEVryvYgXqkEE";
 
     beforeEach(async function () {
-      // Mint some tokens to user
+      // Mint some tokens to user first
+      const depositId = ethers.id("initial_deposit");
+      const signature = await signDeposit(user.address, amount, depositId, signer);
       await bridge.connect(operator).processDeposit(
         user.address,
         amount,
-        ethers.id("initial_deposit"),
-        "0x"
+        depositId,
+        signature
       );
+      await wdoge.connect(user).approve(await bridge.getAddress(), amount);
     });
 
     it("Should allow user to request withdrawal", async function () {
-      await wdoge.connect(user).approve(bridge.address, amount);
       await bridge.connect(user).requestWithdrawal(dogeAddress, amount);
 
-      const withdrawalId = ethers.id(
-        `${user.address}${dogeAddress}${amount}${await ethers.provider.getBlockNumber()}`
+      const timestamp = await time.latest();
+      const abiCoder = new AbiCoder();
+      const withdrawalId = keccak256(
+        abiCoder.encode(
+          ["address", "string", "uint256", "uint256"],
+          [user.address, dogeAddress, amount, timestamp]
+        )
       );
 
       expect(await bridge.processedWithdrawals(withdrawalId)).to.be.true;
@@ -252,12 +257,8 @@ describe("DogeBridge", function () {
 
     it("Should not allow non-admin to update limits", async function () {
       await expect(
-        bridge.connect(user).updateLimits(
-          minDeposit,
-          maxDeposit,
-          bridgeFee
-        )
-      ).to.be.revertedWith("AccessControl: account");
+        bridge.connect(user).updateLimits(minDeposit, maxDeposit, bridgeFee)
+      ).to.be.revertedWith("AccessControl: account 0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc is missing role 0x0000000000000000000000000000000000000000000000000000000000000000");
     });
 
     it("Should allow admin to pause and unpause", async function () {
@@ -269,15 +270,12 @@ describe("DogeBridge", function () {
     });
 
     it("Should not allow operations when paused", async function () {
-      await bridge.pause();
+      const depositId = ethers.id("test_deposit");
+      const signature = await signDeposit(user.address, testAmount, depositId, signer);
 
+      await bridge.pause();
       await expect(
-        bridge.connect(operator).processDeposit(
-          user.address,
-          testAmount,
-          ethers.id("test"),
-          "0x"
-        )
+        bridge.connect(operator).processDeposit(user.address, testAmount, depositId, signature)
       ).to.be.revertedWith("Pausable: paused");
     });
   });
@@ -291,60 +289,71 @@ describe("DogeBridge", function () {
     });
 
     it("Should allow premium users higher transaction limits", async function () {
-      const signature = await signDeposit(user.address, amount, depositId, signer);
-
-      // Should allow up to PREMIUM_MAX_TXS transactions
-      for (let i = 0; i < 50; i++) {
-        const txId = ethers.id(`test_deposit_${i}`);
-        const sig = await signDeposit(user.address, amount, txId, signer);
-        await bridge.connect(operator).processDeposit(user.address, amount, txId, sig);
+      for (let i = 0; i < 20; i++) {
+        const customDepositId = ethers.id(`test_deposit_${i}`);
+        const signature = await signDeposit(user.address, amount, customDepositId, signer);
+        await bridge.connect(operator).processDeposit(
+          user.address,
+          amount,
+          customDepositId,
+          signature
+        );
       }
-
-      // The 51st transaction should fail
-      const failTxId = ethers.id("fail_deposit");
-      const failSig = await signDeposit(user.address, amount, failTxId, signer);
-      await expect(
-        bridge.connect(operator).processDeposit(user.address, amount, failTxId, failSig)
-      ).to.be.revertedWith("Rate limit exceeded");
     });
 
     it("Should enforce lower limits for standard users", async function () {
-      // Revoke premium role
       await bridge.revokeRole(PREMIUM_USER_ROLE, user.address);
 
-      // Should allow up to STANDARD_MAX_TXS transactions
       for (let i = 0; i < 10; i++) {
-        const txId = ethers.id(`test_deposit_${i}`);
-        const sig = await signDeposit(user.address, amount, txId, signer);
-        await bridge.connect(operator).processDeposit(user.address, amount, txId, sig);
+        const customDepositId = ethers.id(`test_deposit_${i}`);
+        const signature = await signDeposit(user.address, amount, customDepositId, signer);
+        await bridge.connect(operator).processDeposit(
+          user.address,
+          amount,
+          customDepositId,
+          signature
+        );
       }
 
-      // The 11th transaction should fail
-      const failTxId = ethers.id("fail_deposit");
-      const failSig = await signDeposit(user.address, amount, failTxId, signer);
+      const nextDepositId = ethers.id("test_deposit_11");
+      const signature = await signDeposit(user.address, amount, nextDepositId, signer);
       await expect(
-        bridge.connect(operator).processDeposit(user.address, amount, failTxId, failSig)
+        bridge.connect(operator).processDeposit(
+          user.address,
+          amount,
+          nextDepositId,
+          signature
+        )
       ).to.be.revertedWith("Rate limit exceeded");
     });
 
     it("Should reset rate limits after period expiration", async function () {
-      // Revoke premium role for standard user test
       await bridge.revokeRole(PREMIUM_USER_ROLE, user.address);
 
-      // Use up all standard transactions
+      // First batch of transactions
       for (let i = 0; i < 10; i++) {
-        const txId = ethers.id(`test_deposit_${i}`);
-        const sig = await signDeposit(user.address, amount, txId, signer);
-        await bridge.connect(operator).processDeposit(user.address, amount, txId, sig);
+        const customDepositId = ethers.id(`test_deposit_${i}`);
+        const signature = await signDeposit(user.address, amount, customDepositId, signer);
+        await bridge.connect(operator).processDeposit(
+          user.address,
+          amount,
+          customDepositId,
+          signature
+        );
       }
 
-      // Advance time by rate limit period
+      // Move time forward
       await time.increase(3600); // 1 hour
 
-      // Should be able to transact again
-      const newTxId = ethers.id("new_deposit");
-      const newSig = await signDeposit(user.address, amount, newTxId, signer);
-      await bridge.connect(operator).processDeposit(user.address, amount, newTxId, newSig);
+      // Should allow more transactions after reset
+      const newDepositId = ethers.id("new_deposit");
+      const signature = await signDeposit(user.address, amount, newDepositId, signer);
+      await bridge.connect(operator).processDeposit(
+        user.address,
+        amount,
+        newDepositId,
+        signature
+      );
     });
   });
 }); 

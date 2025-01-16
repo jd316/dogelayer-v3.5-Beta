@@ -16,59 +16,63 @@ async function main() {
 
   // Deploy WDOGE
   console.log("\nDeploying WDOGE...");
-  const WDOGE = await ethers.getContractFactory("WDOGE");
-  const wdoge = await WDOGE.deploy();
+  const wdogeFactory = await ethers.getContractFactory("WDOGE");
+  const wdoge = await wdogeFactory.deploy();
   await wdoge.waitForDeployment();
-  console.log("WDOGE deployed to:", await wdoge.getAddress());
+  const wdogeAddress = (wdoge as unknown as { target: string }).target;
+  console.log("WDOGE deployed to:", wdogeAddress);
 
   // Deploy Bridge with initial parameters
   console.log("\nDeploying DogeBridge...");
-  const minDeposit = ethers.parseEther("100");    // 100 DOGE minimum
+  const minDeposit = ethers.parseEther("1");      // 1 DOGE minimum
   const maxDeposit = ethers.parseEther("1000000"); // 1M DOGE maximum
   const bridgeFee = ethers.parseEther("1");       // 1 DOGE fee
   
-  const DogeBridge = await ethers.getContractFactory("DogeBridge");
-  const bridge = await DogeBridge.deploy(
-    await wdoge.getAddress(),
+  const bridgeFactory = await ethers.getContractFactory("DogeBridge");
+  const bridge = await bridgeFactory.deploy(
+    wdogeAddress,
     minDeposit,
     maxDeposit,
     bridgeFee
   );
   await bridge.waitForDeployment();
-  console.log("DogeBridge deployed to:", await bridge.getAddress());
+  const bridgeAddress = (bridge as unknown as { target: string }).target;
+  console.log("DogeBridge deployed to:", bridgeAddress);
 
   // Set bridge in WDOGE contract
   console.log("\nSetting bridge in WDOGE contract...");
-  await wdoge.setBridge(await bridge.getAddress());
+  await wdoge.setBridge(bridgeAddress);
   console.log("Bridge set in WDOGE contract");
 
   // Deploy Staking
   console.log("\nDeploying WDOGEStaking...");
-  const WDOGEStaking = await ethers.getContractFactory("WDOGEStaking");
-  const staking = await WDOGEStaking.deploy(await wdoge.getAddress());
+  const stakingFactory = await ethers.getContractFactory("WDOGEStaking");
+  const staking = await stakingFactory.deploy(wdogeAddress);
   await staking.waitForDeployment();
-  console.log("WDOGEStaking deployed to:", await staking.getAddress());
+  const stakingAddress = (staking as unknown as { target: string }).target;
+  console.log("WDOGEStaking deployed to:", stakingAddress);
 
   // Deploy Lending
   console.log("\nDeploying WDOGELending...");
-  const WDOGELending = await ethers.getContractFactory("WDOGELending");
-  const lending = await WDOGELending.deploy(await wdoge.getAddress());
+  const lendingFactory = await ethers.getContractFactory("WDOGELending");
+  const lending = await lendingFactory.deploy(wdogeAddress);
   await lending.waitForDeployment();
-  console.log("WDOGELending deployed to:", await lending.getAddress());
+  const lendingAddress = (lending as unknown as { target: string }).target;
+  console.log("WDOGELending deployed to:", lendingAddress);
 
   // Verify contracts on Etherscan
   if (process.env.ETHERSCAN_API_KEY && hre) {
     console.log("\nVerifying contracts on Etherscan...");
     try {
       await hre.run("verify:verify", {
-        address: await wdoge.getAddress(),
+        address: wdogeAddress,
         constructorArguments: [],
       });
 
       await hre.run("verify:verify", {
-        address: await bridge.getAddress(),
+        address: bridgeAddress,
         constructorArguments: [
-          await wdoge.getAddress(),
+          wdogeAddress,
           minDeposit,
           maxDeposit,
           bridgeFee,
@@ -76,13 +80,13 @@ async function main() {
       });
 
       await hre.run("verify:verify", {
-        address: await staking.getAddress(),
-        constructorArguments: [await wdoge.getAddress()],
+        address: stakingAddress,
+        constructorArguments: [wdogeAddress],
       });
 
       await hre.run("verify:verify", {
-        address: await lending.getAddress(),
-        constructorArguments: [await wdoge.getAddress()],
+        address: lendingAddress,
+        constructorArguments: [wdogeAddress],
       });
     } catch (error) {
       console.error("Error verifying contracts:", error);
@@ -92,10 +96,10 @@ async function main() {
   // Output deployment summary
   console.log("\nDeployment Summary:");
   console.log("-------------------");
-  console.log("WDOGE:", await wdoge.getAddress());
-  console.log("DogeBridge:", await bridge.getAddress());
-  console.log("WDOGEStaking:", await staking.getAddress());
-  console.log("WDOGELending:", await lending.getAddress());
+  console.log("WDOGE:", wdogeAddress);
+  console.log("DogeBridge:", bridgeAddress);
+  console.log("WDOGEStaking:", stakingAddress);
+  console.log("WDOGELending:", lendingAddress);
 }
 
 main()

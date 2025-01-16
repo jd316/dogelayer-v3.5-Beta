@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./WDOGE.sol";
 
 contract DogeBridge is ReentrancyGuard, AccessControl, Pausable {
@@ -52,6 +53,7 @@ contract DogeBridge is ReentrancyGuard, AccessControl, Pausable {
         uint256 _maxDeposit,
         uint256 _bridgeFee
     ) {
+        require(_wdoge != address(0), "Invalid WDOGE address");
         wdoge = WDOGE(_wdoge);
         minDeposit = _minDeposit;
         maxDeposit = _maxDeposit;
@@ -78,13 +80,12 @@ contract DogeBridge is ReentrancyGuard, AccessControl, Pausable {
         uint256 amount,
         bytes32 depositId,
         bytes calldata signature
-    ) internal view {
-        bytes32 messageHash = keccak256(
-            abi.encodePacked(recipient, amount, depositId)
-        ).toEthSignedMessageHash();
-        
-        address signer = messageHash.recover(signature);
-        require(hasRole(SIGNER_ROLE, signer), "Invalid signature");
+    ) internal view returns (bool) {
+        bytes memory encodedData = abi.encode(recipient, amount, depositId);
+        bytes32 messageHash = keccak256(encodedData);
+        bytes32 ethSignedMessageHash = messageHash.toEthSignedMessageHash();
+        address recoveredSigner = ethSignedMessageHash.recover(signature);
+        return hasRole(SIGNER_ROLE, recoveredSigner);
     }
     
     function processDeposit(
@@ -96,7 +97,7 @@ contract DogeBridge is ReentrancyGuard, AccessControl, Pausable {
         require(!processedDeposits[depositId], "Deposit already processed");
         require(amount >= minDeposit && amount <= maxDeposit, "Invalid amount");
         
-        verifySignature(recipient, amount, depositId, signature);
+        require(verifySignature(recipient, amount, depositId, signature), "Invalid signature");
         checkRateLimit(recipient);
         
         processedDeposits[depositId] = true;
@@ -115,7 +116,7 @@ contract DogeBridge is ReentrancyGuard, AccessControl, Pausable {
         checkRateLimit(msg.sender);
         
         bytes32 withdrawalId = keccak256(
-            abi.encodePacked(
+            abi.encode(
                 msg.sender,
                 dogeAddress,
                 amount,
@@ -126,6 +127,9 @@ contract DogeBridge is ReentrancyGuard, AccessControl, Pausable {
         require(!processedWithdrawals[withdrawalId], "Withdrawal already processed");
         
         uint256 amountAfterFee = amount - bridgeFee;
+        require(IERC20(address(wdoge)).allowance(msg.sender, address(this)) >= amount, "ERC20: insufficient allowance");
+        require(IERC20(address(wdoge)).balanceOf(msg.sender) >= amount, "ERC20: insufficient balance");
+        
         wdoge.burn(msg.sender, amount);
         processedWithdrawals[withdrawalId] = true;
         
@@ -137,6 +141,9 @@ contract DogeBridge is ReentrancyGuard, AccessControl, Pausable {
         uint256 _maxDeposit,
         uint256 _bridgeFee
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_minDeposit <= _maxDeposit, "Invalid limits");
+        require(_bridgeFee < _minDeposit, "Fee too high");
+        
         minDeposit = _minDeposit;
         maxDeposit = _maxDeposit;
         bridgeFee = _bridgeFee;

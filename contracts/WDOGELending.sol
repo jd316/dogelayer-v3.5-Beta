@@ -5,14 +5,18 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
-    IERC20 public wdoge;
+    using Math for uint256;
+    
+    IERC20 public immutable wdoge;
     
     uint256 public constant COLLATERAL_RATIO = 150; // 150% collateralization required
     uint256 public constant LIQUIDATION_THRESHOLD = 130; // 130% threshold for liquidation
     uint256 public constant INTEREST_RATE = 500; // 5% annual interest rate
     uint256 public constant RATE_PRECISION = 10000;
+    uint256 public constant YEAR_IN_SECONDS = 365 days;
     
     struct Loan {
         uint256 amount;
@@ -32,8 +36,37 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
     event LoanLiquidated(address indexed borrower, address indexed liquidator, uint256 amount);
     
     constructor(address _wdoge) {
+        require(_wdoge != address(0), "Invalid WDOGE address");
         _transferOwnership(msg.sender);
         wdoge = IERC20(_wdoge);
+    }
+
+    function calculateInterest(uint256 principal, uint256 timeElapsed) public pure returns (uint256) {
+        if (principal == 0 || timeElapsed == 0) return 0;
+        
+        // Use safe math operations to prevent overflow
+        uint256 annualInterest = principal * INTEREST_RATE;
+        uint256 scaledTime = (timeElapsed * RATE_PRECISION) / YEAR_IN_SECONDS;
+        return (annualInterest * scaledTime) / (RATE_PRECISION * RATE_PRECISION);
+    }
+    
+    function getTotalDue(address borrower) public view returns (uint256) {
+        Loan memory loan = loans[borrower];
+        if (loan.amount == 0) return 0;
+        
+        uint256 timeElapsed = block.timestamp - loan.timestamp;
+        uint256 interest = calculateInterest(loan.amount, timeElapsed);
+        return loan.amount + interest - loan.interestPaid;
+    }
+    
+    function getCollateralRatio(address borrower) public view returns (uint256) {
+        Loan memory loan = loans[borrower];
+        if (loan.amount == 0) return 0;
+        
+        uint256 totalDue = getTotalDue(borrower);
+        if (totalDue == 0) return 0;
+        
+        return (loan.collateral * 100) / totalDue;
     }
     
     function borrow(uint256 amount, uint256 collateralAmount) external nonReentrant whenNotPaused {
@@ -44,10 +77,8 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         uint256 requiredCollateral = (amount * COLLATERAL_RATIO) / 100;
         require(collateralAmount >= requiredCollateral, "Insufficient collateral");
         
-        // Transfer collateral to contract
         require(wdoge.transferFrom(msg.sender, address(this), collateralAmount), "Collateral transfer failed");
         
-        // Create loan
         loans[msg.sender] = Loan({
             amount: amount,
             collateral: collateralAmount,
@@ -58,7 +89,6 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         totalLoaned += amount;
         totalCollateral += collateralAmount;
         
-        // Transfer borrowed amount
         require(wdoge.transfer(msg.sender, amount), "Loan transfer failed");
         
         emit LoanCreated(msg.sender, amount, collateralAmount);
@@ -69,30 +99,27 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         require(loan.amount > 0, "No active loan");
         require(amount > 0, "Cannot repay 0");
         
-        // Calculate interest
         uint256 timeElapsed = block.timestamp - loan.timestamp;
-        uint256 interest = (loan.amount * INTEREST_RATE * timeElapsed) / (365 days * RATE_PRECISION);
-        
+        uint256 interest = calculateInterest(loan.amount, timeElapsed);
         uint256 totalDue = loan.amount + interest - loan.interestPaid;
         require(amount <= totalDue, "Amount exceeds loan + interest");
         
-        // Transfer repayment
         require(wdoge.transferFrom(msg.sender, address(this), amount), "Repayment transfer failed");
         
-        // Update loan
         if (amount == totalDue) {
             // Full repayment
             totalLoaned -= loan.amount;
             totalCollateral -= loan.collateral;
-            
-            // Return collateral
             require(wdoge.transfer(msg.sender, loan.collateral), "Collateral return failed");
-            
             delete loans[msg.sender];
         } else {
             // Partial repayment
-            loan.amount -= amount;
-            loan.interestPaid += (amount > interest) ? interest : amount;
+            uint256 remainingInterest = interest - loan.interestPaid;
+            uint256 interestPortion = amount > remainingInterest ? remainingInterest : amount;
+            uint256 principalPortion = amount - interestPortion;
+            
+            loan.amount -= principalPortion;
+            loan.interestPaid += interestPortion;
             loan.timestamp = block.timestamp;
         }
         
@@ -116,9 +143,12 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         require(loan.amount > 0, "No active loan");
         require(amount > 0, "Cannot withdraw 0");
         
-        uint256 requiredCollateral = (loan.amount * COLLATERAL_RATIO) / 100;
+        uint256 totalDue = getTotalDue(msg.sender);
+        uint256 requiredCollateral = (totalDue * COLLATERAL_RATIO) / 100;
+        require(loan.collateral > requiredCollateral, "No excess collateral");
+        
         uint256 excessCollateral = loan.collateral - requiredCollateral;
-        require(amount <= excessCollateral, "Insufficient excess collateral");
+        require(amount <= excessCollateral, "Amount exceeds excess collateral");
         
         loan.collateral -= amount;
         totalCollateral -= amount;
@@ -132,18 +162,11 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         Loan storage loan = loans[borrower];
         require(loan.amount > 0, "No active loan");
         
-        // Check if loan is undercollateralized
-        uint256 timeElapsed = block.timestamp - loan.timestamp;
-        uint256 interest = (loan.amount * INTEREST_RATE * timeElapsed) / (365 days * RATE_PRECISION);
-        uint256 totalDue = loan.amount + interest - loan.interestPaid;
+        uint256 collateralRatio = getCollateralRatio(borrower);
+        require(collateralRatio < LIQUIDATION_THRESHOLD, "Loan not liquidatable");
         
-        uint256 currentRatio = (loan.collateral * 100) / totalDue;
-        require(currentRatio < LIQUIDATION_THRESHOLD, "Loan not liquidatable");
-        
-        // Transfer repayment from liquidator
+        uint256 totalDue = getTotalDue(borrower);
         require(wdoge.transferFrom(msg.sender, address(this), totalDue), "Liquidation payment failed");
-        
-        // Transfer collateral to liquidator
         require(wdoge.transfer(msg.sender, loan.collateral), "Collateral transfer failed");
         
         totalLoaned -= loan.amount;
@@ -166,8 +189,9 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         
         if (loan.amount > 0) {
             uint256 timeElapsed = block.timestamp - loan.timestamp;
-            interestDue = (loan.amount * INTEREST_RATE * timeElapsed) / (365 days * RATE_PRECISION) - loan.interestPaid;
-            collateralRatio = (loan.collateral * 100) / (loan.amount + interestDue);
+            interestDue = calculateInterest(loan.amount, timeElapsed);
+            uint256 totalDue = loan.amount + interestDue;
+            collateralRatio = totalDue > 0 ? (loan.collateral * 100) / totalDue : 0;
         }
     }
     
