@@ -8,29 +8,20 @@ interface StakingFormProps {
 }
 
 interface StakingContract extends Contract {
-  balanceOf(account: string): Promise<bigint>;
-  getRewards(account: string): Promise<bigint>;
-  rewardRate(): Promise<bigint>;
-  totalStaked(): Promise<bigint>;
-  stake(amount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
-  unstake(amount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
-  claimRewards(): Promise<{
-    wait(): Promise<any>;
-  }>;
+  stake: (amount: bigint) => Promise<any>;
+  unstake: (amount: bigint) => Promise<any>;
+  getRewards: (account: string) => Promise<bigint>;
+  rewardRate: () => Promise<bigint>;
+  totalStaked: () => Promise<bigint>;
+  claimRewards: () => Promise<any>;
 }
 
 interface WDOGEContract extends Contract {
-  balanceOf(account: string): Promise<bigint>;
-  approve(spender: string, amount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
+  approve: (spender: string, amount: bigint) => Promise<any>;
+  balanceOf: (account: string) => Promise<bigint>;
 }
 
-export default function StakingForm({ account, provider }: StakingFormProps) {
+const StakingForm: React.FC<StakingFormProps> = ({ account, provider }) => {
   const [amount, setAmount] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -157,7 +148,7 @@ export default function StakingForm({ account, provider }: StakingFormProps) {
 
   if (!provider) {
     return (
-      <div className="text-center text-gray-500">
+      <div className="text-center text-gray-400">
         Please connect your wallet to continue
       </div>
     );
@@ -166,70 +157,79 @@ export default function StakingForm({ account, provider }: StakingFormProps) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <div className="bg-white p-4 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-900">Your Staking Info</h3>
-          <dl className="mt-2 space-y-2">
+        <div className="bg-[#1a1b1e] p-4 rounded-lg border border-gray-800">
+          <h3 className="text-sm font-medium text-gray-200 mb-4">Your Staking Info</h3>
+          <dl className="mt-2 space-y-3">
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Staked Balance:</dt>
-              <dd className="text-sm font-medium">{stakingInfo.stakedBalance} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Staked Balance:</dt>
+              <dd className="text-sm font-medium text-gray-200">{stakingInfo.stakedBalance} wDOGE</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Wallet Balance:</dt>
-              <dd className="text-sm font-medium">{stakingInfo.walletBalance} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Wallet Balance:</dt>
+              <dd className="text-sm font-medium text-gray-200">{stakingInfo.walletBalance} wDOGE</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Pending Rewards:</dt>
-              <dd className="text-sm font-medium">{stakingInfo.pendingRewards} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Pending Rewards:</dt>
+              <dd className="text-sm font-medium text-orange-500">{stakingInfo.pendingRewards} wDOGE</dd>
             </div>
           </dl>
         </div>
 
-        <div className="bg-white p-4 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-900">Pool Info</h3>
-          <dl className="mt-2 space-y-2">
+        <div className="bg-[#1a1b1e] p-4 rounded-lg border border-gray-800">
+          <h3 className="text-sm font-medium text-gray-200 mb-4">Pool Info</h3>
+          <dl className="mt-2 space-y-3">
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Total Staked:</dt>
-              <dd className="text-sm font-medium">{stakingInfo.totalStaked} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Total Staked:</dt>
+              <dd className="text-sm font-medium text-gray-200">{stakingInfo.totalStaked} wDOGE</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">APY:</dt>
-              <dd className="text-sm font-medium">{stakingInfo.apy}%</dd>
+              <dt className="text-sm text-gray-400">APY:</dt>
+              <dd className="text-sm font-medium text-orange-500">{stakingInfo.apy}%</dd>
             </div>
           </dl>
         </div>
       </div>
 
-      <div className="bg-white p-6 rounded-lg shadow">
+      <div className="bg-[#1a1b1e] p-6 rounded-lg border border-gray-800">
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">
+            <label className="block text-sm font-medium text-gray-200 mb-2">
               Amount (wDOGE)
             </label>
-            <div className="mt-1">
+            <div className="flex">
               <input
                 type="number"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 min="0"
                 step="0.00000001"
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                className="block w-full px-3 py-2 bg-[#2c2d30] border border-gray-700 rounded text-gray-200 focus:border-orange-500 focus:ring-orange-500"
                 placeholder="Enter amount"
               />
+              <button
+                onClick={() => setAmount(stakingInfo.walletBalance)}
+                className="ml-2 px-3 py-2 text-sm bg-[#2c2d30] text-orange-500 rounded hover:bg-[#3c3d40] border border-gray-700"
+              >
+                Max
+              </button>
             </div>
           </div>
 
           {error && (
-            <p className="text-sm text-red-600">{error}</p>
+            <div className="p-3 bg-red-900/50 text-red-400 rounded border border-red-800">
+              {error}
+            </div>
           )}
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <button
               onClick={handleStake}
               disabled={isLoading}
-              className={`
-                py-2 px-4 rounded-md text-white font-medium
-                ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}
-              `}
+              className={`px-4 py-2 rounded text-white font-medium ${
+                isLoading 
+                  ? 'bg-gray-600 cursor-not-allowed' 
+                  : 'bg-orange-500 hover:bg-orange-600'
+              }`}
             >
               {isLoading ? 'Processing...' : 'Stake'}
             </button>
@@ -237,10 +237,11 @@ export default function StakingForm({ account, provider }: StakingFormProps) {
             <button
               onClick={handleUnstake}
               disabled={isLoading}
-              className={`
-                py-2 px-4 rounded-md text-white font-medium
-                ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'}
-              `}
+              className={`px-4 py-2 rounded text-white font-medium ${
+                isLoading 
+                  ? 'bg-gray-600 cursor-not-allowed' 
+                  : 'bg-[#2c2d30] hover:bg-[#3c3d40] border border-gray-700'
+              }`}
             >
               {isLoading ? 'Processing...' : 'Unstake'}
             </button>
@@ -248,19 +249,23 @@ export default function StakingForm({ account, provider }: StakingFormProps) {
             <button
               onClick={handleClaimRewards}
               disabled={isLoading || Number(stakingInfo.pendingRewards) === 0}
-              className={`
-                py-2 px-4 rounded-md text-white font-medium
-                ${isLoading || Number(stakingInfo.pendingRewards) === 0
-                  ? 'bg-gray-400 cursor-not-allowed'
-                  : 'bg-green-500 hover:bg-green-600'
-                }
-              `}
+              className={`px-4 py-2 rounded text-white font-medium ${
+                isLoading || Number(stakingInfo.pendingRewards) === 0
+                  ? 'bg-gray-600 cursor-not-allowed'
+                  : 'bg-orange-500 hover:bg-orange-600'
+              }`}
             >
               {isLoading ? 'Processing...' : 'Claim Rewards'}
             </button>
+          </div>
+
+          <div className="mt-4 text-sm text-gray-400">
+            Note: Staked tokens have a 7-day lock period
           </div>
         </div>
       </div>
     </div>
   );
-} 
+};
+
+export default StakingForm; 

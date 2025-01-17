@@ -52,14 +52,27 @@ contract WDOGEStaking is ReentrancyGuard, Ownable, Pausable {
         require(amount > 0, "Cannot unstake 0");
         require(stakes[msg.sender].amount >= amount, "Insufficient stake");
         
-        // Update and claim rewards
+        // Update rewards first
         _updateReward(msg.sender);
-        _claimReward(msg.sender);
         
+        // Store current reward debt
+        uint256 currentReward = stakes[msg.sender].rewardDebt;
+        
+        // Update stake amount
         stakes[msg.sender].amount -= amount;
         totalStaked -= amount;
         
+        // Reset reward debt
+        stakes[msg.sender].rewardDebt = 0;
+        
+        // Transfer staked tokens first
         require(wdoge.transfer(msg.sender, amount), "Transfer failed");
+        
+        // Then transfer rewards if any
+        if (currentReward > 0) {
+            require(wdoge.transfer(msg.sender, currentReward), "Reward transfer failed");
+            emit RewardClaimed(msg.sender, currentReward);
+        }
         
         emit Unstaked(msg.sender, amount);
     }

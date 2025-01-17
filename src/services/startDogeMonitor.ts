@@ -1,23 +1,23 @@
 import { config } from 'dotenv';
 import { DogeMonitor } from '../services/dogeMonitor';
+import { DogecoinP2WPKH } from './dogecoin/scripts/p2wpkh';
 
 // Load environment variables
 config();
 
 async function main() {
   const {
-    DOGE_PRIVATE_KEY,
     MIN_CONFIRMATIONS,
   } = process.env;
 
-  if (!DOGE_PRIVATE_KEY) {
-    throw new Error('Missing DOGE_PRIVATE_KEY environment variable');
-  }
+  // Generate a new key pair
+  const dogecoin = new DogecoinP2WPKH();
+  console.log('Generated deposit address:', dogecoin.generateAddress());
 
   const minConfirmations = MIN_CONFIRMATIONS ? parseInt(MIN_CONFIRMATIONS) : 6;
 
-  // Initialize Dogecoin monitor
-  const monitor = new DogeMonitor(DOGE_PRIVATE_KEY, minConfirmations);
+  // Initialize Dogecoin monitor with the generated key pair
+  const monitor = new DogeMonitor(dogecoin, minConfirmations);
   console.log('Starting Dogecoin transaction monitoring service...');
 
   // Start monitoring with 1-minute intervals

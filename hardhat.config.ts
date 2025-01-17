@@ -1,27 +1,32 @@
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
-import "@nomicfoundation/hardhat-chai-matchers";
 import "@nomicfoundation/hardhat-ethers";
+import "@nomicfoundation/hardhat-chai-matchers";
 import "@nomicfoundation/hardhat-verify";
 import "hardhat-gas-reporter";
 import "solidity-coverage";
 import * as dotenv from "dotenv";
+import { ethers } from "ethers";
 
 dotenv.config();
 
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.20",
-    settings: {
-      optimizer: {
-        enabled: true,
-        runs: 200,
-      },
-    },
+    compilers: [
+      {
+        version: "0.8.20",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+        },
+      }
+    ]
   },
   networks: {
     hardhat: {
-      chainId: 31337,
+      chainId: 1337,
     },
     polygon: {
       url: process.env.POLYGON_RPC_URL || "",

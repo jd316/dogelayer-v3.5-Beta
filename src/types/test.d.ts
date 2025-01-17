@@ -5,6 +5,8 @@ declare global {
     interface Matchers<R> {
       toBeInTheDocument(): R;
       toBeDisabled(): R;
+      toBeValidAddress(): R;
+      toBeValidNetwork(): R;
     }
   }
 } 

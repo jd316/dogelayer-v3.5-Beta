@@ -1,84 +1,115 @@
-import { ethers, Contract } from 'ethers';
-import { formatUnits as ethFormatUnits, parseUnits as ethParseUnits } from '@ethersproject/units';
+import { ethers } from 'ethers';
+import type { Provider, JsonRpcProvider } from 'ethers';
+import { formatUnits as formatEthUnits, parseUnits as parseEthUnits } from '@ethersproject/units';
 import WDOGE_ABI from '../abis/WDOGE.json';
 import BRIDGE_ABI from '../abis/DogeBridge.json';
 import STAKING_ABI from '../abis/WDOGEStaking.json';
 import LENDING_ABI from '../abis/WDOGELending.json';
+import { logger } from './logger';
 
-// Contract addresses on Polygon Mainnet
-export const CONTRACT_ADDRESSES = {
-  WDOGE: process.env.NEXT_PUBLIC_WDOGE_ADDRESS || '',
-  BRIDGE: process.env.NEXT_PUBLIC_BRIDGE_ADDRESS || '',
-  STAKING: process.env.NEXT_PUBLIC_STAKING_ADDRESS || '',
-  LENDING: process.env.NEXT_PUBLIC_LENDING_ADDRESS || '',
+class ContractError extends Error {
+  constructor(message: string, public readonly code?: string) {
+    super(message);
+    this.name = 'ContractError';
+  }
+}
+
+export const getWDOGEContract = async (provider: Provider | JsonRpcProvider) => {
+  if (!provider) {
+    throw new ContractError('Provider is required');
+  }
+
+  try {
+    const address = process.env.NEXT_PUBLIC_WDOGE_ADDRESS;
+    if (!address) {
+      throw new ContractError('WDOGE contract address not found');
+    }
+
+    const contract = new ethers.Contract(address, WDOGE_ABI, provider);
+    return { contract, address };
+  } catch (error) {
+    logger.error('Error getting WDOGE contract:', error instanceof Error ? error : new Error(String(error)));
+    throw error instanceof ContractError ? error : new ContractError('Failed to get WDOGE contract');
+  }
 };
 
-export interface ContractInstance {
-  address: string;
-  contract: Contract;
-}
-
-interface BridgeContract extends Contract {
-  depositFee(): Promise<bigint>;
-  withdrawFee(): Promise<bigint>;
-  minDepositAmount(): Promise<bigint>;
-  maxDepositAmount(): Promise<bigint>;
-  minWithdrawAmount(): Promise<bigint>;
-  maxWithdrawAmount(): Promise<bigint>;
-  requestWithdraw(dogeAddress: string, amount: bigint): Promise<any>;
-}
-
-export async function getBridgeContract(provider: any): Promise<BridgeContract> {
-  const signer = await provider.getSigner();
-  return new Contract(CONTRACT_ADDRESSES.BRIDGE, BRIDGE_ABI, signer) as BridgeContract;
-}
-
-export async function getWDOGEContract(provider: any): Promise<ContractInstance> {
-  const signer = await provider.getSigner();
-  return {
-    address: CONTRACT_ADDRESSES.WDOGE,
-    contract: new Contract(CONTRACT_ADDRESSES.WDOGE, WDOGE_ABI, signer),
-  };
-}
-
-export async function getStakingContract(provider: any): Promise<ContractInstance> {
-  const signer = await provider.getSigner();
-  return {
-    address: CONTRACT_ADDRESSES.STAKING,
-    contract: new Contract(CONTRACT_ADDRESSES.STAKING, STAKING_ABI, signer),
-  };
-}
-
-export async function getLendingContract(provider: any): Promise<ContractInstance> {
-  const signer = await provider.getSigner();
-  return {
-    address: CONTRACT_ADDRESSES.LENDING,
-    contract: new Contract(CONTRACT_ADDRESSES.LENDING, LENDING_ABI, signer),
-  };
-}
-
-export function formatUnits(value: bigint | string, decimals = 18): string {
-  if (typeof value === 'string') {
-    return ethFormatUnits(BigInt(value), decimals);
+export const getBridgeContract = async (provider: Provider) => {
+  if (!provider) {
+    throw new ContractError('Provider is required');
   }
-  return ethFormatUnits(value, decimals);
-}
 
-export function parseUnits(value: string, decimals = 18): bigint {
-  const bn = ethParseUnits(value, decimals);
-  return BigInt(bn.toString());
-}
-
-export function shortenAddress(address: string): string {
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
-export function validateAmount(value: string): boolean {
   try {
-    if (!value || parseFloat(value) <= 0) return false;
-    ethParseUnits(value);
-    return true;
-  } catch {
-    return false;
+    const address = process.env.NEXT_PUBLIC_BRIDGE_ADDRESS;
+    if (!address) {
+      throw new ContractError('Bridge contract address not found');
+    }
+
+    const contract = new ethers.Contract(address, BRIDGE_ABI, provider);
+    return { contract, address };
+  } catch (error) {
+    logger.error('Error getting Bridge contract:', error instanceof Error ? error : new Error(String(error)));
+    throw error instanceof ContractError ? error : new ContractError('Failed to get Bridge contract');
   }
-} 
+};
+
+export const getStakingContract = async (provider: Provider) => {
+  if (!provider) {
+    throw new ContractError('Provider is required');
+  }
+
+  try {
+    const address = process.env.NEXT_PUBLIC_STAKING_ADDRESS;
+    if (!address) {
+      throw new ContractError('Staking contract address not found');
+    }
+
+    const contract = new ethers.Contract(address, STAKING_ABI, provider);
+    return { contract, address };
+  } catch (error) {
+    logger.error('Error getting Staking contract:', error instanceof Error ? error : new Error(String(error)));
+    throw error instanceof ContractError ? error : new ContractError('Failed to get Staking contract');
+  }
+};
+
+export const getLendingContract = async (provider: Provider) => {
+  if (!provider) {
+    throw new ContractError('Provider is required');
+  }
+
+  try {
+    const address = process.env.NEXT_PUBLIC_LENDING_ADDRESS;
+    if (!address) {
+      throw new ContractError('Lending contract address not found');
+    }
+
+    const contract = new ethers.Contract(address, LENDING_ABI, provider);
+    return { contract, address };
+  } catch (error) {
+    logger.error('Error getting Lending contract:', error instanceof Error ? error : new Error(String(error)));
+    throw error instanceof ContractError ? error : new ContractError('Failed to get Lending contract');
+  }
+};
+
+export const validateAmount = (amount: string): boolean => {
+  if (!amount) return false;
+  const num = Number(amount);
+  return !isNaN(num) && num > 0;
+};
+
+export const formatUnits = (value: string | number | bigint, decimals: number = 18): string => {
+  try {
+    return formatEthUnits(value.toString(), decimals);
+  } catch (error) {
+    logger.error('Error formatting units:', error instanceof Error ? error : new Error(String(error)));
+    return '0';
+  }
+};
+
+export const parseUnits = (value: string, decimals: number = 18): bigint => {
+  try {
+    return BigInt(parseEthUnits(value, decimals).toString());
+  } catch (error) {
+    logger.error('Error parsing units:', error instanceof Error ? error : new Error(String(error)));
+    return 0n;
+  }
+}; 

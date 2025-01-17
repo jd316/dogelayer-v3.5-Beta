@@ -1,91 +1,119 @@
-import { DogecoinP2WPKH } from '../../src/services/dogecoin/scripts/p2wpkh';
-import * as bitcoin from 'bitcoinjs-lib';
+import { expect } from "chai";
+import { DogecoinP2WPKH } from "../../src/services/dogecoin/scripts/p2wpkh";
 
-describe('DogecoinP2WPKH', () => {
-  let p2wpkh: DogecoinP2WPKH;
-  const testPrivateKey = 'QVG3yxHj5khGFEHUGZC6kWHHFtwqLkQqHXXHGGHJ4yBXXX'; // Test private key
+describe("DogecoinP2WPKH", function () {
+  const testPrivateKey = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 
-  beforeEach(() => {
-    p2wpkh = new DogecoinP2WPKH(testPrivateKey);
-  });
-
-  describe('Address Generation', () => {
-    it('should generate valid Dogecoin SegWit address', () => {
-      const address = p2wpkh.generateAddress();
-      expect(address).toMatch(/^doge1[a-zA-Z0-9]{39,59}$/);
+  describe("Address Generation", function () {
+    it("should generate valid Dogecoin SegWit address", function () {
+      const dogecoin = new DogecoinP2WPKH(testPrivateKey);
+      const address = dogecoin.getAddress();
+      expect(address).to.match(/^doge1[a-zA-Z0-9]{39,59}$/);
     });
 
-    it('should generate different address with different private key', () => {
-      const p2wpkh2 = new DogecoinP2WPKH();
-      const address1 = p2wpkh.generateAddress();
-      const address2 = p2wpkh2.generateAddress();
-      expect(address1).not.toBe(address2);
+    it("should generate different address with different private key", function () {
+      const differentKey = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+      const dogecoin1 = new DogecoinP2WPKH(testPrivateKey);
+      const dogecoin2 = new DogecoinP2WPKH(differentKey);
+      expect(dogecoin1.getAddress()).to.not.equal(dogecoin2.getAddress());
+    });
+
+    it("should throw error with invalid private key", function () {
+      expect(() => new DogecoinP2WPKH("invalid_key")).to.throw();
     });
   });
 
-  describe('Transaction Creation', () => {
+  describe("Transaction Creation", function () {
+    let dogecoin: DogecoinP2WPKH;
     const mockUtxos = [
-      { txid: '1234', vout: 0, value: 1000000 },
-      { txid: '5678', vout: 1, value: 2000000 }
+      {
+        txid: "1234567890123456789012345678901234567890123456789012345678901234",
+        vout: 0,
+        value: 1000000000, // 10 DOGE
+        confirmations: 6
+      }
     ];
 
-    it('should create valid transaction', async () => {
-      const toAddress = 'doge1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
-      const amount = 1500000;
-      const fee = 100000;
-
-      const txHex = await p2wpkh.createTransaction(mockUtxos, toAddress, amount, fee);
-      expect(txHex).toBeTruthy();
-      expect(typeof txHex).toBe('string');
+    beforeEach(function () {
+      dogecoin = new DogecoinP2WPKH(testPrivateKey);
     });
 
-    it('should handle change output correctly', async () => {
-      const toAddress = 'doge1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
-      const amount = 500000;
-      const fee = 100000;
+    it("should create valid transaction", async function () {
+      const tx = await dogecoin.createTransaction(
+        mockUtxos,
+        "doge1qf8knqh3m4bwxkqthqhj6t9qk3tcm3v9pjz0jn",
+        500000000, // 5 DOGE
+        100000 // 0.001 DOGE fee
+      );
 
-      const txHex = await p2wpkh.createTransaction(mockUtxos, toAddress, amount, fee);
-      const tx = bitcoin.Transaction.fromHex(txHex);
-      expect(tx.outs.length).toBe(2); // One for recipient, one for change
+      expect(tx).to.be.a("string");
+      expect(tx).to.match(/^[0-9a-f]+$/i);
     });
 
-    it('should throw error if insufficient funds', async () => {
-      const toAddress = 'doge1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
-      const amount = 5000000; // More than available
-      const fee = 100000;
+    it("should handle change output correctly", async function () {
+      const tx = await dogecoin.createTransaction(
+        mockUtxos,
+        "doge1qf8knqh3m4bwxkqthqhj6t9qk3tcm3v9pjz0jn",
+        900000000, // 9 DOGE
+        100000 // 0.001 DOGE fee
+      );
 
-      await expect(
-        p2wpkh.createTransaction(mockUtxos, toAddress, amount, fee)
-      ).rejects.toThrow();
-    });
-  });
-
-  describe('Message Signing', () => {
-    const testMessage = 'Test message for signing';
-
-    it('should sign message and verify successfully', () => {
-      const signature = p2wpkh.signMessage(testMessage);
-      const publicKey = p2wpkh.getPublicKey();
-      
-      const isValid = p2wpkh.verifyMessage(testMessage, signature, publicKey);
-      expect(isValid).toBe(true);
+      expect(tx).to.be.a("string");
+      expect(tx).to.match(/^[0-9a-f]+$/i);
     });
 
-    it('should fail verification with incorrect message', () => {
-      const signature = p2wpkh.signMessage(testMessage);
-      const publicKey = p2wpkh.getPublicKey();
-      
-      const isValid = p2wpkh.verifyMessage('Wrong message', signature, publicKey);
-      expect(isValid).toBe(false);
+    it("should handle dust threshold correctly", async function () {
+      const dustThreshold = 546; // Minimum amount in satoshis
+      const testAmounts = [
+        dustThreshold - 1,
+        dustThreshold,
+        dustThreshold + 1
+      ];
+
+      for (const amount of testAmounts) {
+        if (amount < dustThreshold) {
+          await expect(dogecoin.createTransaction(
+            mockUtxos,
+            "doge1qf8knqh3m4bwxkqthqhj6t9qk3tcm3v9pjz0jn",
+            amount,
+            100000
+          )).to.be.rejectedWith(/dust/i);
+        } else {
+          await expect(dogecoin.createTransaction(
+            mockUtxos,
+            "doge1qf8knqh3m4bwxkqthqhj6t9qk3tcm3v9pjz0jn",
+            amount,
+            100000
+          )).to.not.be.rejected;
+        }
+      }
     });
 
-    it('should fail verification with incorrect signature', () => {
-      const signature = 'invalid_signature';
-      const publicKey = p2wpkh.getPublicKey();
-      
-      expect(() => {
-        p2wpkh.verifyMessage(testMessage, signature, publicKey);
-      }).toThrow();
+    it("should throw error for insufficient funds", async function () {
+      await expect(dogecoin.createTransaction(
+        mockUtxos,
+        "doge1qf8knqh3m4bwxkqthqhj6t9qk3tcm3v9pjz0jn",
+        2000000000, // 20 DOGE
+        100000
+      )).to.be.rejectedWith(/insufficient/i);
+    });
+
+    it("should throw error for invalid address", async function () {
+      await expect(dogecoin.createTransaction(
+        mockUtxos,
+        "invalid_address",
+        500000000,
+        100000
+      )).to.be.rejectedWith(/invalid.*address/i);
+    });
+
+    it("should throw error for amount below dust", async function () {
+      await expect(dogecoin.createTransaction(
+        mockUtxos,
+        "doge1qf8knqh3m4bwxkqthqhj6t9qk3tcm3v9pjz0jn",
+        100, // 0.000001 DOGE
+        100000
+      )).to.be.rejectedWith(/dust/i);
     });
   });
 }); 

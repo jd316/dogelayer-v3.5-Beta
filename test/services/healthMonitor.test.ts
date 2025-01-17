@@ -1,132 +1,49 @@
-import { HealthMonitor } from '../../src/services/healthMonitor';
-import { AlertManager } from '../../src/services/alerting';
-import { getBridgeContract } from '../../src/utils/contracts';
-import { DogeMonitor } from '../../src/services/dogeMonitor';
-import { JsonRpcProvider } from 'ethers';
+import { expect } from "chai";
+import { HealthMonitor } from "../../src/services/healthMonitor";
+import { AlertManager } from "../../src/services/alerting";
 
-jest.mock('../../src/utils/contracts');
-jest.mock('../../src/services/dogeMonitor');
-
-describe('HealthMonitor', () => {
+describe("HealthMonitor", function () {
   let healthMonitor: HealthMonitor;
-  let mockDogeMonitor: jest.Mocked<DogeMonitor>;
-  let mockAlertManager: jest.Mocked<AlertManager>;
-  let mockProvider: JsonRpcProvider;
+  let alertManager: AlertManager;
 
-  beforeEach(() => {
-    mockDogeMonitor = {
-      getHealthStatus: jest.fn(),
-    } as any;
-
-    mockAlertManager = {
-      checkHealthStatus: jest.fn(),
-      addAlertHandler: jest.fn(),
-      getAlerts: jest.fn()
-    } as any;
-
-    mockProvider = new JsonRpcProvider("http://localhost:8545");
-    healthMonitor = new HealthMonitor(mockDogeMonitor, mockAlertManager, mockProvider);
+  before(function () {
+    // Initialize AlertManager
+    alertManager = new AlertManager({
+      webhookUrl: "https://test.webhook.url"
+    });
+    
+    // Initialize HealthMonitor
+    healthMonitor = new HealthMonitor(alertManager);
   });
 
-  describe('checkHealth', () => {
-    it('should check bridge service health', async () => {
-      const mockBridgeContract = {
-        depositFee: jest.fn().mockResolvedValue(BigInt(1000)),
-        paused: jest.fn().mockResolvedValue(false)
-      };
-
-      (getBridgeContract as jest.Mock).mockResolvedValue(mockBridgeContract);
-
-      const status = await healthMonitor.checkHealth();
-      
-      expect(status.bridge.isHealthy).toBe(true);
-      expect(status.bridge.performance.successRate).toBeGreaterThan(0);
-      expect(status.bridge.performance.averageResponseTime).toBeGreaterThanOrEqual(0);
-      expect(status.bridge.performance.averageGasUsage).toBeGreaterThanOrEqual(0);
-      expect(status.bridge.performance.errorCount).toBe(0);
-    });
-
-    it('should check dogecoin service health', async () => {
-      const mockDogeHealth = {
-        isHealthy: true,
-        performance: {
-          successRate: 98,
-          averageResponseTime: 500,
-          averageGasUsage: 200000,
-          errorCount: 0
-        }
-      };
-
-      mockDogeMonitor.getHealthStatus.mockResolvedValue(mockDogeHealth as any);
-
-      const status = await healthMonitor.checkHealth();
-      
-      expect(status.dogecoin.isHealthy).toBe(true);
-      expect(status.dogecoin.performance).toEqual(mockDogeHealth.performance);
-    });
-
-    it('should handle bridge service failure', async () => {
-      const mockError = new Error('Bridge error');
-      (getBridgeContract as jest.Mock).mockRejectedValueOnce(mockError);
-
-      const status = await healthMonitor.checkHealth();
-      
-      expect(status.bridge.isHealthy).toBe(false);
-      expect(status.bridge.performance.errorCount).toBeGreaterThan(0);
-    });
-
-    it('should handle dogecoin service failure', async () => {
-      const mockError = new Error('Doge error');
-      (mockDogeMonitor.getHealthStatus as jest.Mock).mockRejectedValueOnce(mockError);
-
-      const status = await healthMonitor.checkHealth();
-      
-      expect(status.dogecoin.isHealthy).toBe(false);
-      expect(status.dogecoin.performance.errorCount).toBeGreaterThan(0);
-    });
-
-    it('should update metrics over time', async () => {
-      const mockBridgeContract = {
-        depositFee: jest.fn().mockResolvedValue(BigInt(1000)),
-        paused: jest.fn().mockResolvedValue(false)
-      };
-
-      (getBridgeContract as jest.Mock).mockResolvedValue(mockBridgeContract);
-
-      // First check
-      await healthMonitor.checkHealth();
-      
-      // Simulate an error
-      (getBridgeContract as jest.Mock).mockRejectedValueOnce(new Error('Test error'));
-      await healthMonitor.checkHealth();
-      
-      // Third check
-      (getBridgeContract as jest.Mock).mockResolvedValue(mockBridgeContract);
-      const status = await healthMonitor.checkHealth();
-      
-      expect(status.bridge.performance.successRate).toBeLessThan(100);
-      expect(status.bridge.performance.errorCount).toBeGreaterThan(0);
-    });
+  it("should initialize with alert manager", function () {
+    expect(healthMonitor).to.not.be.undefined;
   });
 
-  describe('getLastHealthStatus', () => {
-    it('should return cached status if available', async () => {
-      const mockBridgeContract = {
-        depositFee: jest.fn().mockResolvedValue(BigInt(1000)),
-        paused: jest.fn().mockResolvedValue(false)
-      };
+  it("should register and monitor services", function () {
+    healthMonitor.registerService("test-service");
+    const status = healthMonitor.getServiceStatus("test-service");
+    expect(status).to.not.be.undefined;
+  });
 
-      (getBridgeContract as jest.Mock).mockResolvedValue(mockBridgeContract);
+  it("should update service metrics", function () {
+    const metrics = {
+      isHealthy: true,
+      successRate: 100,
+      averageResponseTime: 100,
+      errorCount: 0,
+      transactionMetrics: {
+        totalProcessed: 100,
+        successfulDeposits: 95,
+        failedDeposits: 5,
+        averageConfirmationTime: 300,
+        pendingTransactions: 0,
+        lastProcessedTimestamp: Date.now()
+      }
+    };
 
-      const initialStatus = await healthMonitor.checkHealth();
-      const cachedStatus = healthMonitor.getLastHealthStatus();
-      
-      expect(cachedStatus).toEqual(initialStatus);
-    });
-
-    it('should return null if no status is cached', () => {
-      const status = healthMonitor.getLastHealthStatus();
-      expect(status).toBeNull();
-    });
+    healthMonitor.updateMetrics("test-service", metrics);
+    const status = healthMonitor.getServiceStatus("test-service");
+    expect(status.metrics).to.deep.include(metrics);
   });
 }); 

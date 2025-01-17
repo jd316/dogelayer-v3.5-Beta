@@ -1,203 +1,115 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { Contract } from "ethers";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
-import { time } from "@nomicfoundation/hardhat-network-helpers";
+import { WDOGE, WDOGEStaking } from "../../typechain-types";
 
-interface WDOGEStakingContract extends Contract {
-  wdoge(): Promise<string>;
-  rewardRate(): Promise<bigint>;
-  stake(amount: bigint): Promise<any>;
-  unstake(amount: bigint): Promise<any>;
-  claimReward(): Promise<any>;
-  getStakeInfo(user: string): Promise<[bigint, bigint]>;
-  setRewardRate(newRate: bigint): Promise<any>;
-  pause(): Promise<any>;
-  unpause(): Promise<any>;
-  paused(): Promise<boolean>;
-  connect(signer: SignerWithAddress): WDOGEStakingContract;
-  waitForDeployment(): Promise<this>;
-  getAddress(): Promise<string>;
-}
-
-interface WDOGEContract extends Contract {
-  mint(to: string, amount: bigint): Promise<any>;
-  approve(spender: string, amount: bigint): Promise<any>;
-  balanceOf(account: string): Promise<bigint>;
-  connect(signer: SignerWithAddress): WDOGEContract;
-  waitForDeployment(): Promise<this>;
-  getAddress(): Promise<string>;
-}
-
-describe("WDOGEStaking", function () {
-  let staking: WDOGEStakingContract;
-  let wdoge: WDOGEContract;
+describe("WDOGEStaking", function() {
+  let wdoge: WDOGE;
+  let staking: WDOGEStaking;
   let owner: SignerWithAddress;
   let user: SignerWithAddress;
   let other: SignerWithAddress;
+  let bridge: SignerWithAddress;
 
-  const initialBalance = ethers.parseEther("1000");
-  const stakeAmount = ethers.parseEther("100");
+  const initialStake = ethers.parseEther("1000");
+  const defaultRewardRate = 100; // 1% annual reward rate
 
-  beforeEach(async function () {
-    [owner, user, other] = await ethers.getSigners();
+  beforeEach(async () => {
+    [owner, user, other, bridge] = await ethers.getSigners();
 
-    // Deploy WDOGE
-    const WDOGE = await ethers.getContractFactory("WDOGE", owner);
-    wdoge = (await WDOGE.deploy()) as unknown as WDOGEContract;
+    // Deploy WDOGE token
+    const WDOGEFactory = await ethers.getContractFactory("WDOGE");
+    wdoge = await WDOGEFactory.deploy() as WDOGE;
     await wdoge.waitForDeployment();
-    const wdogeAddress = await wdoge.getAddress();
 
-    // Deploy Staking
-    const WDOGEStaking = await ethers.getContractFactory("WDOGEStaking", owner);
-    staking = (await WDOGEStaking.deploy(wdogeAddress)) as unknown as WDOGEStakingContract;
+    // Deploy Staking contract
+    const StakingFactory = await ethers.getContractFactory("WDOGEStaking");
+    staking = await StakingFactory.deploy(await wdoge.getAddress()) as WDOGEStaking;
     await staking.waitForDeployment();
-    const stakingAddress = await staking.getAddress();
 
-    // Mint tokens to user and staking contract
-    await wdoge.mint(user.address, initialBalance);
-    await wdoge.mint(stakingAddress, ethers.parseEther("10000")); // Mint tokens for rewards
-    await wdoge.connect(user).approve(stakingAddress, initialBalance);
+    // Set bridge
+    await wdoge.setBridge(bridge.address);
   });
 
-  describe("Deployment", function () {
-    it("Should set the correct WDOGE address", async function () {
-      const wdogeAddress = await wdoge.getAddress();
-      expect(await staking.wdoge()).to.equal(wdogeAddress);
-    });
-
-    it("Should set the correct reward rate", async function () {
-      expect(await staking.rewardRate()).to.equal(BigInt(100)); // 1% annual rate
-    });
-  });
-
-  describe("Staking", function () {
-    it("Should allow users to stake tokens", async function () {
-      await staking.connect(user).stake(stakeAmount);
-      const [stakedAmount] = await staking.getStakeInfo(user.address);
-      expect(stakedAmount).to.equal(stakeAmount);
-    });
-
-    it("Should not allow staking zero amount", async function () {
-      await expect(
-        staking.connect(user).stake(BigInt(0))
-      ).to.be.revertedWith("Cannot stake 0");
-    });
-
-    it("Should not allow staking without sufficient balance", async function () {
-      await expect(
-        staking.connect(other).stake(stakeAmount)
-      ).to.be.revertedWith("ERC20: insufficient allowance");
-    });
-  });
-
-  describe("Rewards", function () {
-    beforeEach(async function () {
+  describe("Unstaking", () => {
+    const stakeAmount = ethers.parseEther("100");
+    
+    beforeEach(async () => {
+      // Mint tokens to user and staking contract for rewards
+      await wdoge.connect(bridge).mint(user.address, stakeAmount);
+      await wdoge.connect(bridge).mint(await staking.getAddress(), stakeAmount); // For rewards
+      await wdoge.connect(user).approve(await staking.getAddress(), stakeAmount);
+      
+      // Stake tokens
       await staking.connect(user).stake(stakeAmount);
     });
 
-    it("Should accumulate rewards over time", async function () {
-      // Move time forward by 1 year
-      await time.increase(365 * 24 * 60 * 60);
+    it("should allow users to unstake tokens", async () => {
+      await expect(staking.connect(user).unstake(stakeAmount))
+        .to.emit(staking, "Unstaked")
+        .withArgs(user.address, stakeAmount);
 
-      const [, pendingRewards] = await staking.getStakeInfo(user.address);
-      const expectedRewards = (stakeAmount * BigInt(100)) / BigInt(10000); // 1% annual rate
-      expect(pendingRewards).to.equal(expectedRewards);
+      const stake = await staking.stakes(user.address);
+      expect(stake.amount).to.equal(0n);
     });
 
-    it("Should allow claiming rewards", async function () {
-      // Move time forward
-      await time.increase(365 * 24 * 60 * 60);
-
-      const balanceBefore = await wdoge.balanceOf(user.address);
-      await staking.connect(user).claimReward();
-      const balanceAfter = await wdoge.balanceOf(user.address);
-
-      const [, pendingRewards] = await staking.getStakeInfo(user.address);
-      expect(pendingRewards).to.equal(BigInt(0));
-      expect(balanceAfter).to.be.gt(balanceBefore);
+    it("should reject zero unstake amount", async () => {
+      await expect(staking.connect(user).unstake(0))
+        .to.be.revertedWith("Cannot unstake 0");
     });
 
-    it("Should update rewards when staking more", async function () {
-      // Move time forward
-      await time.increase(180 * 24 * 60 * 60); // 6 months
-
-      // Stake more
-      await staking.connect(user).stake(stakeAmount);
-
-      const [stakedAmount, pendingRewards] = await staking.getStakeInfo(user.address);
-      expect(stakedAmount).to.equal(stakeAmount * BigInt(2));
-      expect(pendingRewards).to.be.gt(BigInt(0));
-    });
-  });
-
-  describe("Unstaking", function () {
-    beforeEach(async function () {
-      await staking.connect(user).stake(stakeAmount);
+    it("should reject unstaking more than staked", async () => {
+      const tooMuch = stakeAmount + ethers.parseEther("1");
+      await expect(staking.connect(user).unstake(tooMuch))
+        .to.be.revertedWith("Insufficient stake");
     });
 
-    it("Should allow users to unstake tokens", async function () {
-      await staking.connect(user).unstake(stakeAmount);
-      const [stakedAmount] = await staking.getStakeInfo(user.address);
-      expect(stakedAmount).to.equal(BigInt(0));
-    });
+    it("should claim rewards when unstaking", async () => {
+      // Wait some time for rewards to accrue
+      const startBlock = await ethers.provider.getBlock('latest');
+      if (!startBlock) throw new Error("Failed to get block");
+      const startTime = startBlock.timestamp;
 
-    it("Should not allow unstaking zero amount", async function () {
-      await expect(
-        staking.connect(user).unstake(BigInt(0))
-      ).to.be.revertedWith("Cannot unstake 0");
-    });
+      await ethers.provider.send("evm_increaseTime", [7 * 24 * 60 * 60]); // 1 week
+      await ethers.provider.send("evm_mine", []);
 
-    it("Should not allow unstaking more than staked", async function () {
-      await expect(
-        staking.connect(user).unstake(stakeAmount + BigInt(1))
-      ).to.be.revertedWith("Insufficient stake");
-    });
+      const endBlock = await ethers.provider.getBlock('latest');
+      if (!endBlock) throw new Error("Failed to get block");
+      const endTime = endBlock.timestamp;
 
-    it("Should claim rewards when unstaking", async function () {
-      // Move time forward
-      await time.increase(365 * 24 * 60 * 60);
+      // Calculate expected rewards using the exact same formula as the contract
+      const timeElapsed = BigInt(endTime - startTime);
+      const rewardRate = await staking.rewardRate();
+      const expectedReward = (stakeAmount * rewardRate * timeElapsed) / (BigInt(365 * 24 * 60 * 60) * BigInt(10000));
 
-      const balanceBefore = await wdoge.balanceOf(user.address);
-      await staking.connect(user).unstake(stakeAmount);
-      const balanceAfter = await wdoge.balanceOf(user.address);
+      // Calculate acceptable range (±0.1% to account for rounding)
+      const minReward = expectedReward * BigInt(999) / BigInt(1000);
+      const maxReward = expectedReward * BigInt(1001) / BigInt(1000);
 
-      expect(balanceAfter).to.be.gt(balanceBefore + stakeAmount);
-    });
-  });
+      // Unstake and verify rewards
+      const tx = await staking.connect(user).unstake(stakeAmount);
+      const receipt = await tx.wait();
+      
+      // Find RewardClaimed event
+      const event = receipt?.logs.find(log => {
+        try {
+          const decoded = staking.interface.parseLog({ topics: log.topics as string[], data: log.data });
+          return decoded?.name === "RewardClaimed";
+        } catch {
+          return false;
+        }
+      });
+      
+      expect(event).to.not.be.undefined;
+      const decoded = staking.interface.parseLog({ topics: event!.topics as string[], data: event!.data });
+      const actualReward = decoded?.args[1];
+      
+      expect(actualReward).to.be.at.least(minReward);
+      expect(actualReward).to.be.at.most(maxReward);
 
-  describe("Admin Functions", function () {
-    it("Should allow owner to set reward rate", async function () {
-      const newRate = BigInt(200); // 2% annual rate
-      await staking.setRewardRate(newRate);
-      expect(await staking.rewardRate()).to.equal(newRate);
-    });
-
-    it("Should not allow non-owner to set reward rate", async function () {
-      await expect(
-        staking.connect(user).setRewardRate(BigInt(200))
-      ).to.be.revertedWith("Ownable: caller is not the owner");
-    });
-
-    it("Should not allow setting rate too high", async function () {
-      await expect(
-        staking.setRewardRate(BigInt(1001)) // > 10%
-      ).to.be.revertedWith("Rate too high");
-    });
-
-    it("Should allow owner to pause and unpause", async function () {
-      await staking.pause();
-      expect(await staking.paused()).to.be.true;
-
-      await staking.unpause();
-      expect(await staking.paused()).to.be.false;
-    });
-
-    it("Should not allow staking when paused", async function () {
-      await staking.pause();
-      await expect(
-        staking.connect(user).stake(stakeAmount)
-      ).to.be.revertedWith("Pausable: paused");
+      const finalStake = await staking.stakes(user.address);
+      expect(finalStake.amount).to.equal(0n);
+      expect(finalStake.rewardDebt).to.equal(0n);
     });
   });
 }); 

@@ -1,147 +1,183 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { Contract } from "ethers";
-import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
+import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
+import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
+import { WDOGE } from "../../typechain-types";
 
-interface WDOGEContract extends Contract {
-  owner(): Promise<string>;
-  bridge(): Promise<string>;
-  name(): Promise<string>;
-  symbol(): Promise<string>;
-  setBridge(address: string): Promise<any>;
-  mint(to: string, amount: bigint): Promise<any>;
-  burn(from: string, amount: bigint): Promise<any>;
-  balanceOf(account: string): Promise<bigint>;
-  pause(): Promise<any>;
-  unpause(): Promise<any>;
-  paused(): Promise<boolean>;
-  transfer(to: string, amount: bigint): Promise<any>;
-  connect(signer: SignerWithAddress): WDOGEContract;
-  waitForDeployment(): Promise<this>;
-  getAddress(): Promise<string>;
-}
+describe("WDOGE", function() {
+  let wdoge: WDOGE;
+  let owner: HardhatEthersSigner;
+  let bridge: HardhatEthersSigner;
+  let user: HardhatEthersSigner;
+  let recipient: HardhatEthersSigner;
 
-describe("WDOGE", function () {
-  let wdoge: WDOGEContract;
-  let owner: SignerWithAddress;
-  let bridge: SignerWithAddress;
-  let user: SignerWithAddress;
-
-  beforeEach(async function () {
-    [owner, bridge, user] = await ethers.getSigners();
-
-    const WDOGE = await ethers.getContractFactory("WDOGE", owner);
-    wdoge = await WDOGE.deploy() as unknown as WDOGEContract;
+  async function deployFixture() {
+    [owner, bridge, user, recipient] = await ethers.getSigners();
+    const WDOGEFactory = await ethers.getContractFactory("WDOGE");
+    wdoge = await WDOGEFactory.deploy() as WDOGE;
     await wdoge.waitForDeployment();
+    return { wdoge, owner, bridge, user, recipient };
+  }
+
+  beforeEach(async function() {
+    const fixture = await loadFixture(deployFixture);
+    wdoge = fixture.wdoge;
+    owner = fixture.owner;
+    bridge = fixture.bridge;
+    user = fixture.user;
+    recipient = fixture.recipient;
   });
 
-  describe("Deployment", function () {
-    it("Should set the right owner", async function () {
-      expect(await wdoge.owner()).to.equal(owner.address);
-    });
-
-    it("Should set the deployer as initial bridge", async function () {
-      expect(await wdoge.bridge()).to.equal(owner.address);
-    });
-
-    it("Should have correct name and symbol", async function () {
+  describe("Deployment", () => {
+    it("should set the correct name and symbol", async () => {
       expect(await wdoge.name()).to.equal("Wrapped Dogecoin");
       expect(await wdoge.symbol()).to.equal("wDOGE");
     });
+
+    it("should set the correct decimals", async () => {
+      expect(await wdoge.decimals()).to.equal(8);
+    });
+
+    it("should set the owner as bridge initially", async () => {
+      expect(await wdoge.bridge()).to.equal(owner.address);
+    });
   });
 
-  describe("Bridge Management", function () {
-    it("Should allow owner to set bridge address", async function () {
+  describe("Bridge Management", () => {
+    it("should allow owner to set bridge address", async () => {
       await wdoge.setBridge(bridge.address);
       expect(await wdoge.bridge()).to.equal(bridge.address);
     });
 
-    it("Should not allow non-owner to set bridge address", async function () {
+    it("should reject bridge address update from non-owner", async () => {
       await expect(
         wdoge.connect(user).setBridge(bridge.address)
       ).to.be.revertedWith("Ownable: caller is not the owner");
     });
 
-    it("Should not allow setting bridge to zero address", async function () {
+    it("should reject invalid bridge address", async () => {
       await expect(
-        wdoge.setBridge("0x0000000000000000000000000000000000000000")
+        wdoge.setBridge(ethers.ZeroAddress)
       ).to.be.revertedWith("Invalid bridge address");
     });
   });
 
-  describe("Minting", function () {
-    beforeEach(async function () {
+  describe("Minting", () => {
+    const mintAmount = ethers.parseEther("100");
+
+    beforeEach(async () => {
       await wdoge.setBridge(bridge.address);
     });
 
-    it("Should allow bridge to mint tokens", async function () {
-      const amount = ethers.parseEther("100");
-      await wdoge.connect(bridge).mint(user.address, amount);
-      expect(await wdoge.balanceOf(user.address)).to.equal(amount);
+    it("should allow bridge to mint tokens", async () => {
+      await wdoge.connect(bridge).mint(user.address, mintAmount);
+      expect(await wdoge.balanceOf(user.address)).to.equal(mintAmount);
     });
 
-    it("Should not allow non-bridge to mint tokens", async function () {
-      const amount = ethers.parseEther("100");
+    it("should reject minting from non-bridge address", async () => {
       await expect(
-        wdoge.connect(user).mint(user.address, amount)
+        wdoge.connect(user).mint(user.address, mintAmount)
       ).to.be.revertedWith("Only bridge can mint");
     });
+
+    it("should emit Transfer event on mint", async () => {
+      await expect(wdoge.connect(bridge).mint(user.address, mintAmount))
+        .to.emit(wdoge, "Transfer")
+        .withArgs(ethers.ZeroAddress, user.address, mintAmount);
+    });
   });
 
-  describe("Burning", function () {
-    beforeEach(async function () {
+  describe("Burning", () => {
+    const burnAmount = ethers.parseEther("100");
+
+    beforeEach(async () => {
       await wdoge.setBridge(bridge.address);
-      await wdoge.connect(bridge).mint(user.address, ethers.parseEther("100"));
+      await wdoge.connect(bridge).mint(user.address, burnAmount);
     });
 
-    it("Should allow bridge to burn tokens", async function () {
-      const amount = ethers.parseEther("50");
-      await wdoge.connect(bridge).burn(user.address, amount);
-      expect(await wdoge.balanceOf(user.address)).to.equal(ethers.parseEther("50"));
+    it("should allow bridge to burn tokens", async () => {
+      await wdoge.connect(bridge).burn(user.address, burnAmount);
+      expect(await wdoge.balanceOf(user.address)).to.equal(0);
     });
 
-    it("Should not allow non-bridge to burn tokens", async function () {
-      const amount = ethers.parseEther("50");
+    it("should reject burning from non-bridge address", async () => {
       await expect(
-        wdoge.connect(user).burn(user.address, amount)
+        wdoge.connect(user).burn(user.address, burnAmount)
       ).to.be.revertedWith("Only bridge can burn");
     });
+
+    it("should emit Transfer event on burn", async () => {
+      await expect(wdoge.connect(bridge).burn(user.address, burnAmount))
+        .to.emit(wdoge, "Transfer")
+        .withArgs(user.address, ethers.ZeroAddress, burnAmount);
+    });
   });
 
-  describe("Pausing", function () {
-    beforeEach(async function () {
+  describe("Transfers", () => {
+    const transferAmount = ethers.parseEther("100");
+
+    beforeEach(async () => {
       await wdoge.setBridge(bridge.address);
-      await wdoge.connect(bridge).mint(user.address, ethers.parseEther("100"));
+      await wdoge.connect(bridge).mint(user.address, transferAmount);
     });
 
-    it("Should allow owner to pause and unpause", async function () {
-      await wdoge.pause();
-      expect(await wdoge.paused()).to.be.true;
-
-      await wdoge.unpause();
-      expect(await wdoge.paused()).to.be.false;
+    it("should allow normal transfers", async () => {
+      await wdoge.connect(user).transfer(recipient.address, transferAmount);
+      expect(await wdoge.balanceOf(recipient.address)).to.equal(transferAmount);
+      expect(await wdoge.balanceOf(user.address)).to.equal(0);
     });
 
-    it("Should not allow non-owner to pause", async function () {
+    it("should reject transfers when paused", async () => {
+      await wdoge.connect(owner).pause();
       await expect(
-        wdoge.connect(user).pause()
-      ).to.be.revertedWith("Ownable: caller is not the owner");
-    });
-
-    it("Should prevent transfers when paused", async function () {
-      await wdoge.pause();
-      await expect(
-        wdoge.connect(user).transfer(bridge.address, ethers.parseEther("50"))
+        wdoge.connect(user).transfer(recipient.address, transferAmount)
       ).to.be.revertedWith("Pausable: paused");
     });
 
-    it("Should allow transfers when unpaused", async function () {
-      await wdoge.pause();
-      await wdoge.unpause();
-      
-      const amount = ethers.parseEther("50");
-      await wdoge.connect(user).transfer(bridge.address, amount);
-      expect(await wdoge.balanceOf(bridge.address)).to.equal(amount);
+    it("should allow transfers after unpause", async () => {
+      await wdoge.connect(owner).pause();
+      await wdoge.connect(owner).unpause();
+      await wdoge.connect(user).transfer(recipient.address, transferAmount);
+      expect(await wdoge.balanceOf(recipient.address)).to.equal(transferAmount);
+    });
+  });
+
+  describe("Emergency Functions", () => {
+    it("should allow owner to pause and unpause", async () => {
+      await wdoge.connect(owner).pause();
+      expect(await wdoge.paused()).to.be.true;
+
+      await wdoge.connect(owner).unpause();
+      expect(await wdoge.paused()).to.be.false;
+    });
+
+    it("should reject pause/unpause from non-owner", async () => {
+      await expect(
+        wdoge.connect(user).pause()
+      ).to.be.revertedWith("Ownable: caller is not the owner");
+
+      await wdoge.connect(owner).pause();
+      await expect(
+        wdoge.connect(user).unpause()
+      ).to.be.revertedWith("Ownable: caller is not the owner");
+    });
+
+    it("should allow emergency withdrawal when paused", async () => {
+      const amount = ethers.parseEther("100");
+      await wdoge.setBridge(bridge.address);
+      await wdoge.connect(bridge).mint(user.address, amount);
+      await wdoge.connect(owner).pause();
+
+      await expect(
+        wdoge.connect(user).emergencyWithdraw()
+      ).to.emit(wdoge, "EmergencyWithdrawn")
+        .withArgs(user.address, amount);
+    });
+
+    it("should reject emergency withdrawal when not paused", async () => {
+      await expect(
+        wdoge.connect(user).emergencyWithdraw()
+      ).to.be.revertedWith("Pausable: not paused");
     });
   });
 }); 

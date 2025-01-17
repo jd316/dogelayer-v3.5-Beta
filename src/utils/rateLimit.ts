@@ -17,6 +17,13 @@ interface RateLimitStore {
   [key: string]: RateLimitRecord;
 }
 
+export interface RateLimitResult {
+  isLimited: boolean;
+  remaining: number;
+  resetTime: number;
+  burstRemaining: number;
+}
+
 export class RateLimiter {
   private store: RateLimitStore = {};
   private windowMs: number;
@@ -35,19 +42,29 @@ export class RateLimiter {
     this.cleanupInterval = setInterval(() => this.cleanup(), 60000);
   }
 
-  async checkLimit(key: string): Promise<boolean> {
+  async checkLimit(key: string): Promise<RateLimitResult> {
     const now = Date.now();
     const record = this.store[key];
 
     if (!record) {
       this.store[key] = this.createNewRecord(now);
-      return true;
+      return {
+        isLimited: false,
+        remaining: this.maxRequests - 1,
+        resetTime: now + this.windowMs,
+        burstRemaining: this.burstLimit - 1
+      };
     }
 
     // Reset if window expired
     if (now > record.resetTime) {
       this.store[key] = this.createNewRecord(now);
-      return true;
+      return {
+        isLimited: false,
+        remaining: this.maxRequests - 1,
+        resetTime: now + this.windowMs,
+        burstRemaining: this.burstLimit - 1
+      };
     }
 
     // Check burst limit
@@ -58,7 +75,12 @@ export class RateLimiter {
     }
 
     if (record.burstCount >= this.burstLimit) {
-      return false;
+      return {
+        isLimited: true,
+        remaining: 0,
+        resetTime: record.resetTime,
+        burstRemaining: 0
+      };
     }
 
     // Adjust window size based on request rate
@@ -70,12 +92,23 @@ export class RateLimiter {
     }
 
     if (record.count >= this.maxRequests) {
-      return false;
+      return {
+        isLimited: true,
+        remaining: 0,
+        resetTime: record.resetTime,
+        burstRemaining: this.burstLimit - record.burstCount
+      };
     }
 
     record.count++;
     record.burstCount++;
-    return true;
+
+    return {
+      isLimited: false,
+      remaining: this.maxRequests - record.count,
+      resetTime: record.resetTime,
+      burstRemaining: this.burstLimit - record.burstCount
+    };
   }
 
   private createNewRecord(now: number): RateLimitRecord {

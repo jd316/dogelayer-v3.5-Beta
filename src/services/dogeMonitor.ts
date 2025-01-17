@@ -1,293 +1,259 @@
-import axios, { AxiosError } from 'axios';
-import { DogecoinP2WPKH } from './dogecoin/scripts/p2wpkh';
 import { ethers } from 'ethers';
-import { sleep } from '../utils/helpers';
+import { 
+  Contract, 
+  JsonRpcProvider, 
+  ContractTransaction, 
+  ContractTransactionResponse,
+  BaseContract,
+  ContractMethod
+} from 'ethers';
+import { formatUnits, parseUnits } from '@ethersproject/units';
+import { keccak256 } from '@ethersproject/keccak256';
+import { toUtf8Bytes } from '@ethersproject/strings';
+import { AlertManager } from './alerting';
+import { logger } from '../utils/logger';
+import { metrics } from '../utils/metrics';
+
+interface DogeMonitorConfig {
+  provider: JsonRpcProvider;
+  bridgeAddress: string;
+  bridgeAbi: any;
+  minConfirmations?: number;
+  retryConfig?: RetryConfig;
+  alertConfig?: {
+    webhookUrl?: string;
+    emailConfig?: {
+      host: string;
+      port: number;
+      secure: boolean;
+      auth: {
+        user: string;
+        pass: string;
+      };
+    };
+  };
+}
+
+interface BridgeContract extends BaseContract {
+  processedDeposits(depositId: string): Promise<boolean>;
+  processDeposit(account: string, amount: bigint, depositId: string): Promise<ContractTransactionResponse>;
+}
 
 interface DogeTransaction {
   txid: string;
-  vout: {
-    value: number;
-    scriptPubKey: {
-      addresses: string[];
-    };
-  }[];
+  vout: number;
+  value: number;
   confirmations: number;
 }
 
 interface HealthStatus {
   isHealthy: boolean;
-  successRate: number;
-  averageResponseTime: number;
-  errorCount: number;
+  lastCheck: Date;
+  errors: string[];
 }
 
 interface Transaction {
-  txid: string;
-  confirmations: number;
-  timestamp: number;
+  hash: string;
+  recipient: string;
+  amount: number;
+  status: 'pending' | 'confirmed' | 'failed';
 }
 
 interface RetryConfig {
   maxRetries: number;
-  initialDelay: number;
+  baseDelay: number;
   maxDelay: number;
 }
 
-export class DogeMonitor {
-  private addressMap: Map<string, { account: string; amount: number }>;
-  private p2wpkh: DogecoinP2WPKH;
-  private minConfirmations: number;
-  private lastProcessedBlock: number = 0;
-  private lastProcessedTime: number = 0;
-  private errors: string[] = [];
-  private maxErrorsStored: number = 10;
-  private lastCheck: number = 0;
-  private recentTransactions: Transaction[] = [];
-  private retryConfig: RetryConfig = {
-    maxRetries: 3,
-    initialDelay: 1000,
-    maxDelay: 10000
-  };
+interface MonitorAlert {
+  type: 'monitor';
+  message: string;
+  severity: 'warning' | 'critical';
+  timestamp: number;
+}
 
-  constructor(privateKey?: string, minConfirmations: number = 6) {
-    this.addressMap = new Map();
-    this.p2wpkh = new DogecoinP2WPKH(privateKey);
-    this.minConfirmations = minConfirmations;
+class DogeMonitorError extends Error {
+  constructor(message: string, public readonly code?: string) {
+    super(message);
+    this.name = 'DogeMonitorError';
+  }
+}
+
+export class TransactionValidationError extends DogeMonitorError {
+  constructor(message: string) {
+    super(message, 'VALIDATION_ERROR');
+  }
+}
+
+export class TransactionProcessingError extends DogeMonitorError {
+  constructor(message: string) {
+    super(message, 'PROCESSING_ERROR');
+  }
+}
+
+export class NetworkError extends DogeMonitorError {
+  constructor(message: string) {
+    super(message, 'NETWORK_ERROR');
+  }
+}
+
+export class DogeMonitor {
+  private readonly provider: JsonRpcProvider;
+  private readonly bridge: BridgeContract;
+  private readonly alertManager: AlertManager;
+  private readonly retryConfig: RetryConfig = {
+    maxRetries: 5,
+    baseDelay: 1000,
+    maxDelay: 30000
+  };
+  private readonly processingQueue: Map<string, Transaction> = new Map();
+  private readonly backoffFactor = 1.5;
+  private readonly minConfirmations = 6;
+  private readonly addressMap: Map<string, { account: string; amount: number }> = new Map();
+  private readonly errors: string[] = [];
+  private readonly maxErrorsStored = 10;
+  private lastProcessedTime = 0;
+  private lastHealthCheck: Date = new Date();
+
+  constructor(
+    provider: JsonRpcProvider,
+    bridge: Contract,
+    alertManager: AlertManager,
+    config?: Partial<RetryConfig>
+  ) {
+    this.provider = provider;
+    this.bridge = bridge as unknown as BridgeContract;
+    this.alertManager = alertManager;
+    if (config) {
+      this.retryConfig = { ...this.retryConfig, ...config };
+    }
   }
 
-  private async withRetry<T>(
-    operation: () => Promise<T>,
-    customConfig?: Partial<RetryConfig>
-  ): Promise<T> {
-    const config = { ...this.retryConfig, ...customConfig };
-    let lastError: Error | null = null;
-    let delay = config.initialDelay;
-
-    for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-      try {
-        return await operation();
-      } catch (error) {
-        lastError = error as Error;
-        if (attempt === config.maxRetries) break;
-
-        // Exponential backoff with jitter
-        const jitter = Math.random() * 200;
-        await sleep(Math.min(delay + jitter, config.maxDelay));
-        delay *= 2;
-
-        this.logError(new Error(`Retry attempt ${attempt} failed: ${lastError.message}`));
-      }
+  async processTransaction(txn: DogeTransaction): Promise<void> {
+    if (txn.confirmations < this.minConfirmations) {
+      throw new TransactionValidationError(`Insufficient confirmations: ${txn.confirmations} < ${this.minConfirmations}`);
     }
 
-    throw lastError || new Error('Operation failed after retries');
-  }
+    const txKey = txn.txid;
+    if (this.processingQueue.has(txKey)) {
+      throw new TransactionValidationError(`Transaction ${txKey} is already being processed`);
+    }
 
-  async generateDepositAddress(account: string, amount: number): Promise<string> {
-    return this.withRetry(async () => {
-      const address = this.p2wpkh.generateAddress();
-      this.addressMap.set(address, { account, amount });
-      return address;
-    });
-  }
-
-  async monitorTransactions(): Promise<void> {
-    const query = `
-      query ($network: BitcoinNetwork!, $addresses: [String!]!) {
-        bitcoin(network: $network) {
-          outputs(
-            options: {limit: 100}
-            date: {since: null}
-            outputAddress: {in: $addresses}
-          ) {
-            outputAddress
-            value
-            outputDirection
-            transaction {
-              hash
-              confirmations
-              block {
-                height
-              }
-            }
-          }
-        }
-      }
-    `;
-
-    return this.withRetry(async () => {
-      const addresses = Array.from(this.addressMap.keys());
-      if (addresses.length === 0) return;
-
-      const response = await axios.post(
-        'https://graphql.bitquery.io',
-        {
-          query,
-          variables: {
-            network: 'dogecoin',
-            addresses,
-          },
-        },
-        {
-          headers: {
-            'X-API-KEY': process.env.BITQUERY_API_KEY,
-          },
-        }
-      );
-
-      const outputs = response.data.data.bitcoin.outputs;
-      await this.processTransactions(outputs);
-    }, {
-      maxRetries: 5,
-      initialDelay: 2000
-    });
-  }
-
-  private async processTransactions(outputs: any[]): Promise<void> {
     try {
-      for (const output of outputs) {
-        const address = output.outputAddress;
-        const deposit = this.addressMap.get(address);
+      const depositInfo = this.addressMap.get(txn.txid);
+      if (!depositInfo) {
+        throw new TransactionValidationError(`No deposit info found for transaction ${txKey}`);
+      }
 
-        if (!deposit) continue;
+      this.processingQueue.set(txKey, {
+        hash: txn.txid,
+        recipient: depositInfo.account,
+        amount: txn.value,
+        status: 'pending'
+      });
 
-        if (output.transaction.confirmations >= this.minConfirmations) {
-          const expectedAmount = deposit.amount;
-          const receivedAmount = output.value;
-
-          if (receivedAmount >= expectedAmount) {
-            // Emit event or callback for successful deposit
-            console.log(`Deposit confirmed for ${deposit.account}: ${receivedAmount} DOGE`);
-            
-            // Remove the address from monitoring
-            this.addressMap.delete(address);
-          } else {
-            this.logError(new Error(
-              `Received amount (${receivedAmount}) is less than expected (${expectedAmount}) for address ${address}`
-            ));
-          }
+      const depositId = keccak256(toUtf8Bytes(txn.txid));
+      const isProcessed = await this.bridge.processedDeposits(depositId);
+      
+      if (!isProcessed) {
+        const amountBigInt = BigInt(parseUnits(txn.value.toString(), 8).toString());
+        try {
+          const transaction = await this.bridge.processDeposit(
+            depositInfo.account,
+            amountBigInt,
+            depositId
+          ) as ContractTransactionResponse;
+          await transaction.wait();
+        } catch (error) {
+          throw new TransactionProcessingError(
+            `Failed to process deposit: ${error instanceof Error ? error.message : 'Unknown error'}`
+          );
         }
       }
+
+      this.processingQueue.set(txKey, {
+        hash: txn.txid,
+        recipient: depositInfo.account,
+        amount: txn.value,
+        status: 'confirmed'
+      });
+
       this.lastProcessedTime = Date.now();
-      this.lastProcessedBlock = outputs[0]?.transaction?.block?.height || this.lastProcessedBlock;
     } catch (error) {
-      this.logError(error as Error);
+      if (error instanceof Error) {
+        this.handleError(error);
+      } else {
+        this.handleError(new NetworkError('Unknown error processing transaction'));
+      }
+      this.processingQueue.set(txKey, {
+        hash: txn.txid,
+        recipient: '',
+        amount: txn.value,
+        status: 'failed'
+      });
       throw error;
     }
   }
 
-  async verifyTransaction(txid: string): Promise<boolean> {
-    return this.withRetry(async () => {
-      const response = await axios.get(
-        `https://api.blockcypher.com/v1/doge/main/txs/${txid}`
-      );
-
-      const tx = response.data;
-      return tx.confirmations >= this.minConfirmations;
-    });
-  }
-
-  getMonitoredAddresses(): Array<string> {
-    return Array.from(this.addressMap.keys());
-  }
-
-  private logError(error: Error): void {
-    const timestamp = new Date().toISOString();
-    const errorMessage = `${timestamp}: ${error.message}`;
-    this.errors.unshift(errorMessage);
-    
+  private handleError(error: Error): void {
+    this.errors.push(error.message);
     if (this.errors.length > this.maxErrorsStored) {
-      this.errors.pop();
+      this.errors.shift();
     }
-
-    // Log to external monitoring service if available
-    if (process.env.MONITORING_ENDPOINT) {
-      this.withRetry(() => 
-        axios.post(process.env.MONITORING_ENDPOINT!, {
-          service: 'DogeMonitor',
-          error: errorMessage,
-          timestamp
-        })
-      ).catch(console.error); // Don't wait for the request
-    }
-
-    console.error(errorMessage);
-  }
-
-  async getHealthStatus(): Promise<HealthStatus> {
-    try {
-      const now = Date.now();
-      const recentTransactions = await this.getRecentTransactions();
-      const successfulTxs = recentTransactions.filter(tx => tx.confirmations >= this.minConfirmations);
-      
-      const status = {
-        isHealthy: true,
-        successRate: recentTransactions.length > 0 
-          ? (successfulTxs.length / recentTransactions.length) * 100
-          : 100,
-        averageResponseTime: now - this.lastCheck,
-        errorCount: this.errors.length
-      };
-
-      // Update last check time
-      this.lastCheck = now;
-
-      return status;
-    } catch (error) {
-      console.error('Error getting health status:', error);
-      return {
-        isHealthy: false,
-        successRate: 0,
-        averageResponseTime: 0,
-        errorCount: this.errors.length + 1
-      };
-    }
-  }
-
-  private async getRecentTransactions(): Promise<Transaction[]> {
-    return this.withRetry(async () => {
-      const addresses = Array.from(this.addressMap.keys());
-      if (addresses.length === 0) return this.recentTransactions;
-
-      const response = await axios.post(
-        'https://graphql.bitquery.io',
-        {
-          query: `
-            query ($network: BitcoinNetwork!, $addresses: [String!]!) {
-              bitcoin(network: $network) {
-                outputs(
-                  options: {limit: 100}
-                  date: {since: null}
-                  outputAddress: {in: $addresses}
-                ) {
-                  transaction {
-                    hash
-                    confirmations
-                    timestamp
-                  }
-                }
-              }
-            }
-          `,
-          variables: {
-            network: 'dogecoin',
-            addresses,
-          },
-        },
-        {
-          headers: {
-            'X-API-KEY': process.env.BITQUERY_API_KEY,
-          },
+    
+    const severity = error instanceof TransactionProcessingError ? 'critical' : 'warning';
+    
+    this.alertManager.sendAlert({
+      type: 'monitor',
+      message: error.message,
+      severity,
+      timestamp: Date.now(),
+      metadata: {
+        metrics: {
+          successRate: this.calculateSuccessRate(),
+          errorCount: this.errors.length,
+          lastError: {
+            message: error.message,
+            timestamp: Date.now(),
+            count: this.countSimilarErrors(error.message)
+          }
         }
-      );
-
-      const outputs = response.data.data.bitcoin.outputs;
-      this.recentTransactions = outputs.map((output: any) => ({
-        txid: output.transaction.hash,
-        confirmations: output.transaction.confirmations,
-        timestamp: output.transaction.timestamp
-      }));
-
-      return this.recentTransactions;
+      }
     });
+  }
+
+  private calculateSuccessRate(): number {
+    const total = Array.from(this.processingQueue.values()).length;
+    if (total === 0) return 100;
+    
+    const successful = Array.from(this.processingQueue.values())
+      .filter(tx => tx.status === 'confirmed')
+      .length;
+    
+    // Track metrics
+    metrics.recordValue('doge_monitor_transactions_total', total);
+    metrics.recordValue('doge_monitor_transactions_successful', successful);
+    
+    // Calculate success rate with 2 decimal precision
+    const rate = Math.round((successful / total) * 10000) / 100;
+    metrics.recordValue('doge_monitor_success_rate', rate);
+    
+    return rate;
+  }
+
+  private countSimilarErrors(message: string): number {
+    return this.errors.filter(err => err === message).length;
+  }
+
+  getHealthStatus(): HealthStatus {
+    const now = new Date();
+    const timeSinceLastProcess = now.getTime() - this.lastProcessedTime;
+    const successRate = this.calculateSuccessRate();
+    
+    return {
+      isHealthy: this.errors.length === 0 && successRate >= 90,
+      lastCheck: now,
+      errors: [...this.errors]
+    };
   }
 } 

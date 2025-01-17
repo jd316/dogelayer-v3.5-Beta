@@ -3,100 +3,129 @@ import { ethers, Contract } from 'ethers';
 import { getLendingContract, getWDOGEContract, validateAmount, formatUnits, parseUnits } from '../utils/contracts';
 
 interface LendingFormProps {
-  account: string;
-  provider?: typeof ethers.BrowserProvider;
+  account?: string;
+  provider?: any;
 }
 
 interface LendingContract extends Contract {
-  getLoan(borrower: string): Promise<{
+  borrow: (amount: bigint, collateralAmount: bigint) => Promise<any>;
+  repay: (amount: bigint) => Promise<any>;
+  addCollateral: (amount: bigint) => Promise<any>;
+  withdrawCollateral: (amount: bigint) => Promise<any>;
+  getLoan: (borrower: string) => Promise<{
     amount: bigint;
     collateral: bigint;
     timestamp: bigint;
     interestPaid: bigint;
   }>;
-  getCollateralRatio(borrower: string): Promise<bigint>;
-  getInterestDue(borrower: string): Promise<bigint>;
-  borrow(amount: string, collateralAmount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
-  repay(amount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
-  addCollateral(amount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
-  withdrawCollateral(amount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
+  getCollateralRatio: (borrower: string) => Promise<bigint>;
+  getInterestDue: (borrower: string) => Promise<bigint>;
 }
 
 interface WDOGEContract extends Contract {
-  balanceOf(account: string): Promise<bigint>;
-  approve(spender: string, amount: string): Promise<{
-    wait(): Promise<any>;
-  }>;
+  approve: (spender: string, amount: bigint) => Promise<any>;
+  balanceOf: (account: string) => Promise<bigint>;
 }
 
-export default function LendingForm({ account, provider }: LendingFormProps) {
+interface LendingInfo {
+  borrowedAmount: string;
+  collateralAmount: string;
+  interestDue: string;
+  collateralRatio: string;
+  totalBorrowed: string;
+  totalCollateral: string;
+}
+
+const LendingForm: React.FC<LendingFormProps> = ({ account, provider }) => {
   const [amount, setAmount] = useState('');
   const [collateralAmount, setCollateralAmount] = useState('');
+  const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [loanInfo, setLoanInfo] = useState({
-    loanAmount: '0',
+  const [activeTab, setActiveTab] = useState<'borrow' | 'repay'>('borrow');
+  const [lendingInfo, setLendingInfo] = useState<LendingInfo>({
+    borrowedAmount: '0',
     collateralAmount: '0',
     interestDue: '0',
     collateralRatio: '0',
-    walletBalance: '0',
+    totalBorrowed: '0',
+    totalCollateral: '0'
   });
+  const [maxBorrowAmount, setMaxBorrowAmount] = useState('0');
+  const [walletBalance, setWalletBalance] = useState('0');
+
+  const handleError = (error: any) => {
+    console.error('Error:', error);
+    setError(error?.message || 'An error occurred');
+    setIsLoading(false);
+  };
+
+  const updateLendingInfo = async () => {
+    if (!provider || !account) {
+      console.log('Provider or account not available');
+      return;
+    }
+
+    try {
+      const signer = await provider.getSigner();
+      if (!signer) {
+        console.log('Signer not available');
+        return;
+      }
+
+      const { contract: lendingContract } = await getLendingContract(provider);
+      const { contract: wdogeContract } = await getWDOGEContract(provider);
+      
+      if (!lendingContract || !wdogeContract) {
+        console.log('Contracts not available');
+        return;
+      }
+
+      const lending = lendingContract as unknown as LendingContract;
+      const wdoge = wdogeContract as unknown as WDOGEContract;
+
+      const [loan, collateralRatio, interestDue, balance] = await Promise.all([
+        lending.getLoan(account),
+        lending.getCollateralRatio(account),
+        lending.getInterestDue(account),
+        wdoge.balanceOf(account)
+      ]);
+
+      setLendingInfo({
+        borrowedAmount: formatUnits(loan.amount),
+        collateralAmount: formatUnits(loan.collateral),
+        interestDue: formatUnits(interestDue),
+        collateralRatio: formatUnits(collateralRatio),
+        totalBorrowed: formatUnits(balance),
+        totalCollateral: formatUnits(loan.collateral)
+      });
+
+      setWalletBalance(formatUnits(balance));
+      setMaxBorrowAmount(formatUnits(balance));
+    } catch (error) {
+      console.error('Error updating lending info:', error);
+      handleError(error);
+    }
+  };
 
   useEffect(() => {
-    const fetchLoanInfo = async () => {
-      if (!provider || !account) return;
-
-      try {
-        const { contract: lendingContract } = await getLendingContract(provider);
-        const { contract: wdogeContract } = await getWDOGEContract(provider);
-        const lending = lendingContract as LendingContract;
-        const wdoge = wdogeContract as WDOGEContract;
-
-        const [loan, collateralRatio, interestDue, walletBalance] = await Promise.all([
-          lending.getLoan(account),
-          lending.getCollateralRatio(account),
-          lending.getInterestDue(account),
-          wdoge.balanceOf(account),
-        ]);
-
-        setLoanInfo({
-          loanAmount: formatUnits(loan.amount),
-          collateralAmount: formatUnits(loan.collateral),
-          interestDue: formatUnits(interestDue),
-          collateralRatio: formatUnits(collateralRatio),
-          walletBalance: formatUnits(walletBalance),
-        });
-      } catch (error) {
-        console.error('Error fetching loan info:', error);
-        setError('Failed to fetch loan information');
-      }
-    };
-
-    fetchLoanInfo();
-    const interval = setInterval(fetchLoanInfo, 15000); // Refresh every 15 seconds
-
-    return () => clearInterval(interval);
+    if (provider && account) {
+      updateLendingInfo();
+      const interval = setInterval(updateLendingInfo, 15000);
+      return () => clearInterval(interval);
+    }
   }, [provider, account]);
 
   const handleBorrow = async () => {
     if (!provider || !account || !validateAmount(amount) || !validateAmount(collateralAmount)) return;
 
     setIsLoading(true);
-    setError(null);
+    setError('');
 
     try {
       const { contract: lendingContract, address: lendingAddress } = await getLendingContract(provider);
       const { contract: wdogeContract } = await getWDOGEContract(provider);
-      const lending = lendingContract as LendingContract;
-      const wdoge = wdogeContract as WDOGEContract;
+      const lending = lendingContract as unknown as LendingContract;
+      const wdoge = wdogeContract as unknown as WDOGEContract;
 
       // Approve lending contract to spend wDOGE as collateral
       const approveTx = await wdoge.approve(lendingAddress, parseUnits(collateralAmount));
@@ -108,11 +137,9 @@ export default function LendingForm({ account, provider }: LendingFormProps) {
 
       setAmount('');
       setCollateralAmount('');
+      await updateLendingInfo();
     } catch (error) {
-      console.error('Error borrowing:', error);
-      setError('Failed to borrow tokens');
-    } finally {
-      setIsLoading(false);
+      handleError(error);
     }
   };
 
@@ -120,21 +147,19 @@ export default function LendingForm({ account, provider }: LendingFormProps) {
     if (!provider || !account || !validateAmount(amount)) return;
 
     setIsLoading(true);
-    setError(null);
+    setError('');
 
     try {
       const { contract: lendingContract } = await getLendingContract(provider);
-      const lending = lendingContract as LendingContract;
+      const lending = lendingContract as unknown as LendingContract;
 
       const tx = await lending.repay(parseUnits(amount));
       await tx.wait();
 
       setAmount('');
+      await updateLendingInfo();
     } catch (error) {
-      console.error('Error repaying:', error);
-      setError('Failed to repay loan');
-    } finally {
-      setIsLoading(false);
+      handleError(error);
     }
   };
 
@@ -142,13 +167,13 @@ export default function LendingForm({ account, provider }: LendingFormProps) {
     if (!provider || !account || !validateAmount(collateralAmount)) return;
 
     setIsLoading(true);
-    setError(null);
+    setError('');
 
     try {
       const { contract: lendingContract, address: lendingAddress } = await getLendingContract(provider);
       const { contract: wdogeContract } = await getWDOGEContract(provider);
-      const lending = lendingContract as LendingContract;
-      const wdoge = wdogeContract as WDOGEContract;
+      const lending = lendingContract as unknown as LendingContract;
+      const wdoge = wdogeContract as unknown as WDOGEContract;
 
       // Approve lending contract to spend wDOGE
       const approveTx = await wdoge.approve(lendingAddress, parseUnits(collateralAmount));
@@ -159,11 +184,9 @@ export default function LendingForm({ account, provider }: LendingFormProps) {
       await tx.wait();
 
       setCollateralAmount('');
+      await updateLendingInfo();
     } catch (error) {
-      console.error('Error adding collateral:', error);
-      setError('Failed to add collateral');
-    } finally {
-      setIsLoading(false);
+      handleError(error);
     }
   };
 
@@ -171,27 +194,25 @@ export default function LendingForm({ account, provider }: LendingFormProps) {
     if (!provider || !account || !validateAmount(collateralAmount)) return;
 
     setIsLoading(true);
-    setError(null);
+    setError('');
 
     try {
       const { contract: lendingContract } = await getLendingContract(provider);
-      const lending = lendingContract as LendingContract;
+      const lending = lendingContract as unknown as LendingContract;
 
       const tx = await lending.withdrawCollateral(parseUnits(collateralAmount));
       await tx.wait();
 
       setCollateralAmount('');
+      await updateLendingInfo();
     } catch (error) {
-      console.error('Error withdrawing collateral:', error);
-      setError('Failed to withdraw collateral');
-    } finally {
-      setIsLoading(false);
+      handleError(error);
     }
   };
 
   if (!provider) {
     return (
-      <div className="text-center text-gray-500">
+      <div className="text-center text-gray-400">
         Please connect your wallet to continue
       </div>
     );
@@ -200,130 +221,183 @@ export default function LendingForm({ account, provider }: LendingFormProps) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <div className="bg-white p-4 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-900">Your Loan Info</h3>
-          <dl className="mt-2 space-y-2">
+        <div className="bg-[#1a1b1e] p-4 rounded-lg border border-gray-800">
+          <h3 className="text-sm font-medium text-gray-200 mb-4">Your Lending Info</h3>
+          <dl className="mt-2 space-y-3">
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Loan Amount:</dt>
-              <dd className="text-sm font-medium">{loanInfo.loanAmount} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Borrowed Amount:</dt>
+              <dd className="text-sm font-medium text-gray-200">{lendingInfo.borrowedAmount} wDOGE</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Collateral:</dt>
-              <dd className="text-sm font-medium">{loanInfo.collateralAmount} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Collateral Amount:</dt>
+              <dd className="text-sm font-medium text-gray-200">{lendingInfo.collateralAmount} wDOGE</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Interest Due:</dt>
-              <dd className="text-sm font-medium">{loanInfo.interestDue} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Interest Due:</dt>
+              <dd className="text-sm font-medium text-orange-500">{lendingInfo.interestDue} wDOGE</dd>
             </div>
           </dl>
         </div>
 
-        <div className="bg-white p-4 rounded-lg shadow">
-          <h3 className="text-sm font-medium text-gray-900">Account Info</h3>
-          <dl className="mt-2 space-y-2">
+        <div className="bg-[#1a1b1e] p-4 rounded-lg border border-gray-800">
+          <h3 className="text-sm font-medium text-gray-200 mb-4">Pool Info</h3>
+          <dl className="mt-2 space-y-3">
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Wallet Balance:</dt>
-              <dd className="text-sm font-medium">{loanInfo.walletBalance} wDOGE</dd>
+              <dt className="text-sm text-gray-400">Total Borrowed:</dt>
+              <dd className="text-sm font-medium text-gray-200">{lendingInfo.totalBorrowed} wDOGE</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-sm text-gray-500">Collateral Ratio:</dt>
-              <dd className="text-sm font-medium">{loanInfo.collateralRatio}%</dd>
+              <dt className="text-sm text-gray-400">Total Collateral:</dt>
+              <dd className="text-sm font-medium text-gray-200">{lendingInfo.totalCollateral} wDOGE</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-sm text-gray-400">Collateral Ratio:</dt>
+              <dd className="text-sm font-medium text-orange-500">{lendingInfo.collateralRatio}%</dd>
             </div>
           </dl>
         </div>
       </div>
 
-      <div className="bg-white p-6 rounded-lg shadow">
+      <div className="bg-[#1a1b1e] p-6 rounded-lg border border-gray-800">
         <div className="space-y-4">
+          <div className="flex space-x-4 mb-6">
+            <button
+              onClick={() => setActiveTab('borrow')}
+              className={`flex-1 px-4 py-2 text-sm font-medium rounded ${
+                activeTab === 'borrow'
+                  ? 'bg-orange-500 text-white'
+                  : 'bg-[#2c2d30] text-gray-400 hover:bg-[#3c3d40] border border-gray-700'
+              }`}
+            >
+              Borrow
+            </button>
+            <button
+              onClick={() => setActiveTab('repay')}
+              className={`flex-1 px-4 py-2 text-sm font-medium rounded ${
+                activeTab === 'repay'
+                  ? 'bg-orange-500 text-white'
+                  : 'bg-[#2c2d30] text-gray-400 hover:bg-[#3c3d40] border border-gray-700'
+              }`}
+            >
+              Repay
+            </button>
+          </div>
+
           <div>
-            <label className="block text-sm font-medium text-gray-700">
-              Amount (wDOGE)
+            <label className="block text-sm font-medium text-gray-200 mb-2">
+              {activeTab === 'borrow' ? 'Borrow Amount' : 'Repay Amount'} (wDOGE)
             </label>
-            <div className="mt-1">
+            <div className="flex">
               <input
                 type="number"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 min="0"
                 step="0.00000001"
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                className="block w-full px-3 py-2 bg-[#2c2d30] border border-gray-700 rounded text-gray-200 focus:border-orange-500 focus:ring-orange-500"
                 placeholder="Enter amount"
               />
+              <button
+                onClick={() => setAmount(maxBorrowAmount)}
+                className="ml-2 px-3 py-2 text-sm bg-[#2c2d30] text-orange-500 rounded hover:bg-[#3c3d40] border border-gray-700"
+              >
+                Max
+              </button>
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700">
-              Collateral Amount (wDOGE)
-            </label>
-            <div className="mt-1">
-              <input
-                type="number"
-                value={collateralAmount}
-                onChange={(e) => setCollateralAmount(e.target.value)}
-                min="0"
-                step="0.00000001"
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
-                placeholder="Enter collateral amount"
-              />
+          {activeTab === 'borrow' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-200 mb-2">
+                Collateral Amount (wDOGE)
+              </label>
+              <div className="flex">
+                <input
+                  type="number"
+                  value={collateralAmount}
+                  onChange={(e) => setCollateralAmount(e.target.value)}
+                  min="0"
+                  step="0.00000001"
+                  className="block w-full px-3 py-2 bg-[#2c2d30] border border-gray-700 rounded text-gray-200 focus:border-orange-500 focus:ring-orange-500"
+                  placeholder="Enter collateral amount"
+                />
+                <button
+                  onClick={() => setCollateralAmount(walletBalance)}
+                  className="ml-2 px-3 py-2 text-sm bg-[#2c2d30] text-orange-500 rounded hover:bg-[#3c3d40] border border-gray-700"
+                >
+                  Max
+                </button>
+              </div>
             </div>
-          </div>
-
-          {error && (
-            <p className="text-sm text-red-600">{error}</p>
           )}
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-4">
+          {error && (
+            <div className="p-3 bg-red-900/50 text-red-400 rounded border border-red-800">
+              {error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-4">
+            {activeTab === 'borrow' ? (
               <button
                 onClick={handleBorrow}
                 disabled={isLoading}
-                className={`
-                  w-full py-2 px-4 rounded-md text-white font-medium
-                  ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}
-                `}
+                className={`px-4 py-2 rounded text-white font-medium ${
+                  isLoading
+                    ? 'bg-gray-600 cursor-not-allowed'
+                    : 'bg-orange-500 hover:bg-orange-600'
+                }`}
               >
                 {isLoading ? 'Processing...' : 'Borrow'}
               </button>
-
+            ) : (
               <button
                 onClick={handleRepay}
                 disabled={isLoading}
-                className={`
-                  w-full py-2 px-4 rounded-md text-white font-medium
-                  ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'}
-                `}
+                className={`px-4 py-2 rounded text-white font-medium ${
+                  isLoading
+                    ? 'bg-gray-600 cursor-not-allowed'
+                    : 'bg-orange-500 hover:bg-orange-600'
+                }`}
               >
                 {isLoading ? 'Processing...' : 'Repay'}
               </button>
-            </div>
+            )}
+          </div>
 
-            <div className="space-y-4">
-              <button
-                onClick={handleAddCollateral}
-                disabled={isLoading}
-                className={`
-                  w-full py-2 px-4 rounded-md text-white font-medium
-                  ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}
-                `}
-              >
-                {isLoading ? 'Processing...' : 'Add Collateral'}
-              </button>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <button
+              onClick={handleAddCollateral}
+              disabled={isLoading}
+              className={`px-4 py-2 rounded text-white font-medium ${
+                isLoading
+                  ? 'bg-gray-600 cursor-not-allowed'
+                  : 'bg-[#2c2d30] hover:bg-[#3c3d40] border border-gray-700'
+              }`}
+            >
+              {isLoading ? 'Processing...' : 'Add Collateral'}
+            </button>
 
-              <button
-                onClick={handleWithdrawCollateral}
-                disabled={isLoading}
-                className={`
-                  w-full py-2 px-4 rounded-md text-white font-medium
-                  ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'}
-                `}
-              >
-                {isLoading ? 'Processing...' : 'Withdraw Collateral'}
-              </button>
-            </div>
+            <button
+              onClick={handleWithdrawCollateral}
+              disabled={isLoading}
+              className={`px-4 py-2 rounded text-white font-medium ${
+                isLoading
+                  ? 'bg-gray-600 cursor-not-allowed'
+                  : 'bg-[#2c2d30] hover:bg-[#3c3d40] border border-gray-700'
+              }`}
+            >
+              {isLoading ? 'Processing...' : 'Withdraw Collateral'}
+            </button>
+          </div>
+
+          <div className="mt-4 text-sm text-gray-400">
+            Note: Minimum collateral ratio is 150%
           </div>
         </div>
       </div>
     </div>
   );
-} 
+};
+
+export default LendingForm; 

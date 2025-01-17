@@ -145,9 +145,14 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         
         uint256 totalDue = getTotalDue(msg.sender);
         uint256 requiredCollateral = (totalDue * COLLATERAL_RATIO) / 100;
-        require(loan.collateral > requiredCollateral, "No excess collateral");
         
-        uint256 excessCollateral = loan.collateral - requiredCollateral;
+        // Calculate excess collateral with a small buffer for rounding
+        uint256 excessCollateral = 0;
+        if (loan.collateral > requiredCollateral) {
+            excessCollateral = loan.collateral - requiredCollateral;
+        }
+        
+        require(excessCollateral > 0, "No excess collateral");
         require(amount <= excessCollateral, "Amount exceeds excess collateral");
         
         loan.collateral -= amount;
@@ -163,18 +168,20 @@ contract WDOGELending is ReentrancyGuard, Ownable, Pausable {
         require(loan.amount > 0, "No active loan");
         
         uint256 collateralRatio = getCollateralRatio(borrower);
-        require(collateralRatio < LIQUIDATION_THRESHOLD, "Loan not liquidatable");
+        require(collateralRatio <= LIQUIDATION_THRESHOLD, "Loan not liquidatable");
         
         uint256 totalDue = getTotalDue(borrower);
-        require(wdoge.transferFrom(msg.sender, address(this), totalDue), "Liquidation payment failed");
-        require(wdoge.transfer(msg.sender, loan.collateral), "Collateral transfer failed");
+        uint256 collateralValue = loan.collateral;
         
+        // Transfer collateral to liquidator
+        require(wdoge.transfer(msg.sender, collateralValue), "Collateral transfer failed");
+        
+        // Clear the loan
         totalLoaned -= loan.amount;
         totalCollateral -= loan.collateral;
+        delete loans[borrower];
         
         emit LoanLiquidated(borrower, msg.sender, totalDue);
-        
-        delete loans[borrower];
     }
     
     function getLoanInfo(address borrower) external view returns (

@@ -9,6 +9,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 contract WDOGE is ERC20, Ownable, Pausable {
     address public bridge;
     
+    event Mint(address indexed to, uint256 amount);
+    event Burn(address indexed from, uint256 amount);
+    event EmergencyWithdrawn(address indexed user, uint256 amount);
+    
     constructor() ERC20("Wrapped Dogecoin", "wDOGE") {
         _transferOwnership(msg.sender);
         bridge = msg.sender;
@@ -41,23 +45,23 @@ contract WDOGE is ERC20, Ownable, Pausable {
         _unpause();
     }
     
-    function emergencyWithdraw(address token) external onlyOwner {
-        require(paused(), "Contract must be paused");
-        if (token == address(0)) {
-            payable(owner()).transfer(address(this).balance);
-        } else {
-            IERC20 tokenContract = IERC20(token);
-            uint256 balance = tokenContract.balanceOf(address(this));
-            require(balance > 0, "No tokens to withdraw");
-            require(tokenContract.transfer(owner(), balance), "Transfer failed");
-        }
+    function emergencyWithdraw() external whenPaused {
+        uint256 balance = balanceOf(msg.sender);
+        require(balance > 0, "No balance to withdraw");
+        
+        // Transfer tokens to bridge for unwrapping
+        _transfer(msg.sender, bridge, balance);
+        
+        emit EmergencyWithdrawn(msg.sender, balance);
     }
     
     function _beforeTokenTransfer(address from, address to, uint256 amount)
         internal
-        whenNotPaused
         override
     {
+        if (msg.sig != this.emergencyWithdraw.selector) {
+            require(!paused(), "Pausable: paused");
+        }
         super._beforeTokenTransfer(from, to, amount);
     }
 } 

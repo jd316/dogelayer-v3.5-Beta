@@ -1,23 +1,25 @@
+/** @type {import('ts-jest').JestConfigWithTsJest} */
 module.exports = {
   preset: 'ts-jest',
-  testEnvironment: 'node',
+  testEnvironment: 'jsdom',
+  setupFilesAfterEnv: ['<rootDir>/test/setup.ts'],
+  moduleNameMapper: {
+    '\\.(css|less|sass|scss)$': 'identity-obj-proxy',
+    '\\.(gif|ttf|eot|svg|png)$': '<rootDir>/test/__mocks__/fileMock.js'
+  },
   transform: {
-    '^.+\\.tsx?$': ['ts-jest', {
+    '^.+\\.(ts|tsx)$': ['ts-jest', {
       tsconfig: 'tsconfig.json'
     }]
   },
-  moduleNameMapper: {
-    '\\.(css|less|sass|scss)$': 'identity-obj-proxy',
-  },
-  setupFilesAfterEnv: ['<rootDir>/test/setup.ts'],
-  testMatch: ['**/test/**/*.test.ts', '**/test/**/*.test.tsx'],
-  testPathIgnorePatterns: [
-    '/node_modules/',
-    '/test/contracts/'  // Ignore contract tests as they use Hardhat
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
+  testMatch: [
+    '**/__tests__/**/*.[jt]s?(x)',
+    '**/?(*.)+(spec|test).[jt]s?(x)'
   ],
   globals: {
     'ts-jest': {
-      isolatedModules: true
+      tsconfig: 'tsconfig.json'
     }
   }
 }; 
