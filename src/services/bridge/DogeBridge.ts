@@ -27,6 +27,14 @@ interface DepositEventData {
     confirmations: number;
 }
 
+interface PendingWithdrawal {
+    recipient: string;
+    amount: number;
+    timestamp: number;
+    status: 'pending' | 'processing' | 'completed' | 'failed';
+    error?: string;
+}
+
 export class DogeBridge extends EventEmitter {
     private depositMonitor: DepositMonitor;
     private wdogeContract: WDOGEContract;
@@ -34,6 +42,7 @@ export class DogeBridge extends EventEmitter {
     private processedTxs: Set<string> = new Set();
     private readonly withdrawalProcessor: WithdrawalProcessor;
     private readonly withdrawalMonitor: WithdrawalMonitor;
+    private pendingWithdrawals: Map<string, PendingWithdrawal> = new Map();
 
     constructor(
         config: BridgeConfig,
@@ -77,6 +86,45 @@ export class DogeBridge extends EventEmitter {
             this.withdrawalProcessor,
             config.provider
         );
+
+        // Listen for withdrawal events from the contract
+        this.wdogeContract.onBurn((from, amount) => {
+            this.handleWithdrawalRequest(from, amount);
+        });
+    }
+
+    private async handleWithdrawalRequest(from: string, amount: number): Promise<void> {
+        const withdrawal: PendingWithdrawal = {
+            recipient: from,
+            amount,
+            timestamp: Date.now(),
+            status: 'pending'
+        };
+        this.pendingWithdrawals.set(from, withdrawal);
+        this.emit('withdrawal_requested', withdrawal);
+    }
+
+    public async getPendingWithdrawals(): Promise<PendingWithdrawal[]> {
+        return Array.from(this.pendingWithdrawals.values())
+            .filter(w => w.status === 'pending');
+    }
+
+    public async markWithdrawalComplete(txid: string): Promise<void> {
+        for (const [address, withdrawal] of this.pendingWithdrawals) {
+            if (withdrawal.status === 'processing') {
+                withdrawal.status = 'completed';
+                this.emit('withdrawal_completed', { txid, withdrawal });
+            }
+        }
+    }
+
+    public async markWithdrawalFailed(address: string, error: string): Promise<void> {
+        const withdrawal = this.pendingWithdrawals.get(address);
+        if (withdrawal) {
+            withdrawal.status = 'failed';
+            withdrawal.error = error;
+            this.emit('withdrawal_failed', { address, error, withdrawal });
+        }
     }
 
     public generateDepositAddress(userId: string): string {

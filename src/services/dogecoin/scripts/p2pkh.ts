@@ -1,6 +1,7 @@
 import { payments, Network } from 'bitcoinjs-lib';
 import { ECPairFactory, ECPairInterface } from 'ecpair';
 import * as ecc from 'tiny-secp256k1';
+import { createHash } from 'crypto';
 
 const ECPair = ECPairFactory(ecc as any);
 
@@ -53,8 +54,24 @@ export class DogecoinP2PKH {
 
     signMessage(message: string): string {
         try {
-            const messageBuffer = Buffer.from(message);
-            const signature = this.keypair.sign(messageBuffer);
+            // Create message prefix
+            const prefix = Buffer.from(DOGECOIN_NETWORK.messagePrefix);
+            const messageLen = Buffer.from(message.length.toString());
+            
+            // Concatenate prefix + message length + message
+            const messageBuffer = Buffer.concat([
+                prefix,
+                messageLen,
+                Buffer.from(message)
+            ]);
+            
+            // Double SHA256 hash
+            const hash = createHash('sha256')
+                .update(createHash('sha256').update(messageBuffer).digest())
+                .digest();
+            
+            // Sign the hash
+            const signature = this.keypair.sign(hash);
             return signature.toString('hex');
         } catch (error: unknown) {
             if (error instanceof Error) {
@@ -66,9 +83,24 @@ export class DogecoinP2PKH {
 
     verifyMessage(message: string, signature: string, publicKey: Buffer): boolean {
         try {
-            const messageBuffer = Buffer.from(message);
+            // Create message prefix
+            const prefix = Buffer.from(DOGECOIN_NETWORK.messagePrefix);
+            const messageLen = Buffer.from(message.length.toString());
+            
+            // Concatenate prefix + message length + message
+            const messageBuffer = Buffer.concat([
+                prefix,
+                messageLen,
+                Buffer.from(message)
+            ]);
+            
+            // Double SHA256 hash
+            const hash = createHash('sha256')
+                .update(createHash('sha256').update(messageBuffer).digest())
+                .digest();
+            
             const signatureBuffer = Buffer.from(signature, 'hex');
-            return ECPair.fromPublicKey(publicKey).verify(messageBuffer, signatureBuffer);
+            return ECPair.fromPublicKey(publicKey).verify(hash, signatureBuffer);
         } catch (error: unknown) {
             if (error instanceof Error) {
                 throw new Error(`Failed to verify message: ${error.message}`);

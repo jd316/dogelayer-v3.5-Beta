@@ -1,12 +1,20 @@
 import { DogecoinP2PKH } from '../scripts/p2pkh';
 import { UTXO } from '../../../types/UTXO';
 import axios from 'axios';
+import { EventEmitter } from 'events';
 
-export class WithdrawalProcessor {
+interface WithdrawalRequest {
+    toAddress: string;
+    amount: number;
+    fee?: number;
+}
+
+export class WithdrawalProcessor extends EventEmitter {
     private readonly rpcUrl: string;
     private readonly rpcUser: string;
     private readonly rpcPassword: string;
     private readonly dogecoin: DogecoinP2PKH;
+    private readonly defaultFee = 100000; // 0.001 DOGE
 
     constructor(
         privateKey: string,
@@ -14,32 +22,46 @@ export class WithdrawalProcessor {
         rpcUser: string,
         rpcPassword: string
     ) {
+        super();
         this.rpcUrl = rpcUrl;
         this.rpcUser = rpcUser;
         this.rpcPassword = rpcPassword;
         this.dogecoin = new DogecoinP2PKH(privateKey);
     }
 
-    public async processWithdrawal(
-        toAddress: string,
-        amount: number,
-        fee: number
-    ): Promise<string> {
-        // Get UTXOs for the withdrawal
-        const utxos = await this.getUTXOs(amount);
-        
-        // Create transaction
-        const signedTx = this.dogecoin.signMessage(
-            JSON.stringify({
-                utxos,
-                toAddress,
-                amount,
-                fee
-            })
-        );
+    public async processWithdrawal(request: WithdrawalRequest): Promise<string> {
+        try {
+            // Get UTXOs for the withdrawal
+            const utxos = await this.getUTXOs(request.amount + (request.fee || this.defaultFee));
+            
+            // Create transaction
+            const signedTx = this.dogecoin.signMessage(
+                JSON.stringify({
+                    utxos,
+                    toAddress: request.toAddress,
+                    amount: request.amount,
+                    fee: request.fee || this.defaultFee
+                })
+            );
 
-        // Broadcast transaction
-        return await this.broadcastTransaction(signedTx);
+            // Broadcast transaction
+            const txid = await this.broadcastTransaction(signedTx);
+            
+            this.emit('withdrawal_processed', {
+                txid,
+                toAddress: request.toAddress,
+                amount: request.amount,
+                fee: request.fee || this.defaultFee
+            });
+            
+            return txid;
+        } catch (error) {
+            this.emit('withdrawal_failed', {
+                error: error instanceof Error ? error.message : String(error),
+                request
+            });
+            throw error;
+        }
     }
 
     private async getUTXOs(requiredAmount: number): Promise<UTXO[]> {
