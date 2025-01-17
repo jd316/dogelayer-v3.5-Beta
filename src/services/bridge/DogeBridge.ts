@@ -2,10 +2,9 @@ import { DepositMonitor } from '../dogecoin/monitor/DepositMonitor';
 import { WDOGEContract } from '../wdoge/WDOGEContract';
 import { AddressManager } from '../dogecoin/address/AddressManager';
 import { EventEmitter } from 'events';
-import { Provider } from '@ethersproject/providers';
+import { Provider, ContractTransactionResponse } from 'ethers';
 import { WithdrawalProcessor } from '../dogecoin/withdrawal/WithdrawalProcessor';
 import { WithdrawalMonitor } from '../dogecoin/withdrawal/WithdrawalMonitor';
-import { DogecoinP2WPKH } from '../dogecoin/scripts/p2wpkh';
 
 interface BridgeConfig {
     rpcUrl: string;
@@ -100,8 +99,12 @@ export class DogeBridge extends EventEmitter {
 
         try {
             // Mint WDOGE tokens
-            const tx = await this.wdogeContract.mint(details.userId, event.amount);
-            await tx.wait(); // Wait for transaction confirmation
+            const tx: ContractTransactionResponse = await this.wdogeContract.mint(details.userId, event.amount);
+            const receipt = await tx.wait();
+            
+            if (!receipt) {
+                throw new Error('Transaction failed to be mined');
+            }
 
             // Mark transaction as processed
             this.processedTxs.add(event.txid);
@@ -118,7 +121,7 @@ export class DogeBridge extends EventEmitter {
                 address: event.address,
                 userId: details.userId,
                 amount: event.amount,
-                mintTxHash: tx.hash
+                mintTxHash: receipt.hash
             });
         } catch (error) {
             console.error('Error minting WDOGE:', error);

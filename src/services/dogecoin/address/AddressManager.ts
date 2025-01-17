@@ -1,4 +1,4 @@
-import { DogecoinP2WPKH } from '../scripts/p2wpkh';
+import { DogecoinP2PKH } from '../scripts/p2pkh';
 import { randomBytes } from 'crypto';
 
 interface AddressDetails {
@@ -17,9 +17,9 @@ export class AddressManager {
         // Generate random private key
         const privateKey = randomBytes(32).toString('hex');
         
-        // Create P2WPKH instance
-        const p2wpkh = new DogecoinP2WPKH(privateKey);
-        const address = p2wpkh.getAddress();
+        // Create P2PKH instance for legacy address
+        const dogecoin = new DogecoinP2PKH(privateKey);
+        const address = dogecoin.generateAddress();
 
         // Store address details
         const details: AddressDetails = {

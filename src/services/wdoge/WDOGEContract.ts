@@ -1,4 +1,4 @@
-import { Contract, ContractTransaction, BigNumber, providers, Signer, utils } from 'ethers';
+import { Contract, ContractTransactionResponse, BigNumberish, Provider, Signer, formatUnits, parseUnits } from 'ethers';
 
 const WDOGE_ABI = [
     "function mint(address to, uint256 amount) external",
@@ -15,50 +15,50 @@ export class WDOGEContract {
 
     constructor(
         contractAddress: string,
-        private readonly provider: providers.Provider,
+        private readonly provider: Provider,
         private readonly signer: Signer
     ) {
         this.contract = new Contract(contractAddress, WDOGE_ABI, signer);
     }
 
-    public async mint(userAddress: string, amountInSatoshis: number): Promise<ContractTransaction> {
+    public async mint(userAddress: string, amountInSatoshis: number): Promise<ContractTransactionResponse> {
         // Convert Dogecoin satoshis to WDOGE (assuming 1:1 ratio)
-        const amount = utils.parseUnits(amountInSatoshis.toString(), 8);
+        const amount = parseUnits(amountInSatoshis.toString(), 8);
         return await this.contract.mint(userAddress, amount);
     }
 
-    public async burn(amountInSatoshis: number): Promise<ContractTransaction> {
-        const amount = utils.parseUnits(amountInSatoshis.toString(), 8);
+    public async burn(amountInSatoshis: number): Promise<ContractTransactionResponse> {
+        const amount = parseUnits(amountInSatoshis.toString(), 8);
         return await this.contract.burn(amount);
     }
 
     public async balanceOf(address: string): Promise<number> {
         const balance = await this.contract.balanceOf(address);
-        return Number(utils.formatUnits(balance, 8));
+        return Number(formatUnits(balance, 8));
     }
 
     public async totalSupply(): Promise<number> {
         const supply = await this.contract.totalSupply();
-        return Number(utils.formatUnits(supply, 8));
+        return Number(formatUnits(supply, 8));
     }
 
     public onMint(callback: (to: string, amount: number) => void): void {
-        this.contract.on("Mint", (to: string, value: BigNumber) => {
-            const amount = Number(utils.formatUnits(value, 8));
+        this.contract.on("Mint", (to: string, value: BigNumberish) => {
+            const amount = Number(formatUnits(value, 8));
             callback(to, amount);
         });
     }
 
     public onBurn(callback: (from: string, amount: number) => void): void {
-        this.contract.on("Burn", (from: string, value: BigNumber) => {
-            const amount = Number(utils.formatUnits(value, 8));
+        this.contract.on("Burn", (from: string, value: BigNumberish) => {
+            const amount = Number(formatUnits(value, 8));
             callback(from, amount);
         });
     }
 
     public onTransfer(callback: (from: string, to: string, amount: number) => void): void {
-        this.contract.on("Transfer", (from: string, to: string, value: BigNumber) => {
-            const amount = Number(utils.formatUnits(value, 8));
+        this.contract.on("Transfer", (from: string, to: string, value: BigNumberish) => {
+            const amount = Number(formatUnits(value, 8));
             callback(from, to, amount);
         });
     }

@@ -12,7 +12,7 @@ import axios, { AxiosError } from 'axios';
 import { DogeBridge } from '../types/contracts';
 import { CircuitBreaker } from '../utils/circuitBreaker';
 import { logger } from '../utils/logger';
-import { DogecoinP2WPKH } from '../services/dogecoin/scripts/p2wpkh';
+import { DogecoinP2PKH } from '../services/dogecoin/scripts/p2pkh';
 
 interface DogeTransaction {
   txid: string;
@@ -67,7 +67,7 @@ export class BridgeService {
   private readonly MAX_RETRIES = 3;
   private readonly RESET_TIMEOUT = 60000; // 1 minute
   private isMonitoring = false;
-  private p2wpkh: DogecoinP2WPKH;
+  private p2pkh: DogecoinP2PKH;
   private signer: Signer;
 
   constructor(config: BridgeServiceConfig) {
@@ -85,7 +85,7 @@ export class BridgeService {
       failureThreshold: config.circuitBreakerConfig?.failureThreshold || 5,
       resetTimeout: config.circuitBreakerConfig?.resetTimeout || this.RESET_TIMEOUT
     });
-    this.p2wpkh = new DogecoinP2WPKH(config.privateKey);
+    this.p2pkh = new DogecoinP2PKH(config.privateKey);
   }
 
   private validateConfig(config: BridgeServiceConfig): void {
